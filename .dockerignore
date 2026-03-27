@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+node_modules
+frontend/node_modules
+frontend/dist
+backend/node_modules
+backend/dist
+backend/data
+backend/uploads
+npm-debug.log
+old pascal/Dokumentation.pages
+old pascal/public
+old pascal/server.js

@@ -1,0 +1,58 @@
+:root {
+  color: #111827;
+  background: #f4f6f8;
+  font-family: 'Aptos', 'Segoe UI', sans-serif;
+  font-size: 18px;
+  line-height: 1.45;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --primary: #111827;
+  --card: #f3f4f6;
+  --surface: #ffffff;
+  --text-strong: #111827;
+  --text-soft: #6b7280;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.88), rgba(244, 246, 248, 0.92)),
+    linear-gradient(180deg, #ffffff 0%, #edf2f7 100%);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+a {
+  color: inherit;
+}
+
+p,
+h1,
+h2,
+h3 {
+  margin: 0;
+}

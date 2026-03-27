@@ -1,0 +1,7 @@
+{
+  "rooms": {
+    "101011": {"building":"ABC","level":"Level 24","room":"12345","door":"1","image":"DLevel1.jpg"}
+  },
+  "feedback": [],
+  "analytics": []
+}

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PATHFINDER</title>
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-touch-icon" href="logo.jpg">
+
+<style>
+:root{
+  --bg:#fff; --muted:#6b7280; --primary:#111827; --card:#f3f4f6; --highlight:#10b981;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{width:100%;height:100%;font-family:sans-serif;background:var(--bg);}
+.wrap{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding-top:50px;position:fixed;top:0;left:0;overflow:hidden;}
+.brand-logo{height:60px;margin:15px auto;display:block;}
+.hero{width:100%;max-height:220px;object-fit:contain;margin-bottom:20px;}
+.searchLabel{margin-bottom:15px;font-size:18px;font-weight:600;color:var(--muted);}
+.searchArea{display:flex;flex-direction:column;align-items:center;gap:15px;width:100%;max-width:480px;}
+.inputWrap{position:relative;width:100%;}
+.inputWrap input{width:100%;padding:14px;font-size:18px;border-radius:14px;border:1px solid #d1d5db;}
+.inputHint{position:absolute;left:16px;top:50%;transform:translateY(-50%);pointer-events:none;color:#9ca3af;font-size:16px;}
+.btn{padding:12px;width:100%;border:none;border-radius:14px;font-size:18px;cursor:pointer;background:var(--primary);color:#fff;}
+.btn:disabled{opacity:.4;}
+.error{font-size:16px;color:#dc2626;display:none;}
+.result-wrapper{display:none;position:absolute;top:0;left:0;width:100%;height:100%;flex-direction:column;align-items:center;overflow-y:auto;padding-top:20px;text-align:center;z-index:10;}
+.resultHeader{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;width:90%;max-width:800px;}
+.backArrow{font-size:26px;cursor:pointer;}
+.timerBox{font-size:14px;color:var(--muted);}
+.destinationTitle{font-size:28px;font-weight:700;margin-bottom:8px;}
+.destinationSubtitle{font-size:14px;color:var(--muted);margin-bottom:15px;}
+.infoGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;max-width:800px;margin:0 auto 15px;}
+.tile{background:var(--card);border-radius:14px;padding:12px;text-align:center;}
+.label{font-size:10px;color:#6b7280;text-transform:uppercase;}
+.value{font-size:18px;font-weight:600;}
+.pickupHint{margin-bottom:25px;display:flex;gap:8px;font-size:14px;}
+.media{width:100%;max-height:50vh;object-fit:contain;border-radius:18px;}
+#feedbackSection{display:flex;gap:5px;flex-wrap:wrap;justify-content:center;}
+#feedbackSection button{padding:12px;border:none;border-radius:10px;background:var(--primary);color:#fff;min-width:80px;}
+#feedbackSection input{padding:12px;border:1px solid #ccc;border-radius:10px;min-width:300px;flex-grow:1;}
+#thankYouMessage{color:#10b981;font-weight:700;display:none;}
+
+/* ADMIN STYLING */
+#adminContent{display:none;padding:10px;}
+#roomsGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px;}
+.room-card{background:#fff;padding:10px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}
+.room-card img{width:100%;height:100px;object-fit:cover;border-radius:4px;margin:5px 0;}
+table{border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden;margin-top:10px;}
+th,td{border:1px solid #ddd;padding:8px;text-align:left;}
+th{background:#f3f4f6;cursor:pointer;}
+#imageList img{width:50px;height:50px;object-fit:contain;margin:3px;border-radius:4px;}
+#dropZone{border:2px dashed #999;padding:20px;text-align:center;margin:10px 0;border-radius:8px;background:#fff;}
+</style>
+</head>
+
+<body>
+
+<!-- MAIN UI -->
+<div class="wrap" id="mainWrapper">
+  <img src="logo.jpg" class="brand-logo">
+  <img src="header.jpg" class="hero">
+  <div class="searchLabel">Enter the last numbers of your USID.</div>
+  <div class="searchArea">
+    <div class="inputWrap">
+      <input id="roomInput" type="tel" maxlength="6" placeholder=" ">
+      <div class="inputHint">123:0G:<strong>000000</strong></div>
+    </div>
+    <button id="searchBtn" class="btn" disabled>Search</button>
+    <div id="errorMsg" class="error">No USID found</div>
+  </div>
+</div>
+
+<div id="imageCache" style="display:none">
+  <img src="DLevel1.jpg">
+  <img src="DLevel2.jpg">
+</div>
+
+<div class="result-wrapper" id="resultView">
+  <div class="resultHeader">
+    <div id="resetBtn" class="backArrow">←</div>
+    <div class="timerBox"><span id="countdown">45</span>s</div>
+  </div>
+  <div class="destinationTitle">YOUR DESTINATION</div>
+  <div class="destinationSubtitle">The destination is highlighted in green</div>
+  <div id="resultCard" class="infoGrid"></div>
+  <img id="resultImage" class="media">
+  <div class="pickupHint">🔑 Pick up keys/cards if needed 💳</div>
+  <div id="feedbackSection">
+    <button id="thumbUp">👍</button>
+    <button id="thumbDown">👎</button>
+    <input id="feedbackComment" type="text" placeholder="Optional comment (min 10 chars)">
+    <button id="sendFeedback">Send</button>
+    <div id="thankYouMessage">Thank you!</div>
+  </div>
+</div>
+
+<!-- ADMIN PANEL -->
+<div id="adminContent">
+  <h1>PATHFINDER Admin Panel</h1>
+  <input type="password" id="adminPass" placeholder="Admin password">
+  <button onclick="simpleLogin()">Login</button>
+
+  <button onclick="logout()">Logout</button>
+
+  <h2>Search / Filter Rooms</h2>
+  <input type="text" id="searchInput" placeholder="Search by USID, Building, Level">
+  <h2>Rooms</h2>
+  <div id="dropZone">Drag & Drop JSON here to import rooms</div>
+  <input type="file" id="fileInput"><button onclick="importFile()">Upload JSON</button>
+  <div id="roomsGrid"></div>
+
+  <h2>Upload Image</h2>
+  <input type="file" id="imgFile"><button onclick="uploadImage()">Upload Image</button>
+  <div id="imageList"></div>
+
+  <h2>Feedback</h2>
+  <button onclick="exportFeedback()">Export Feedback CSV</button>
+  <table id="feedbackTable">
+    <thead>
+      <tr><th>USID</th><th>Rating</th><th>Comment</th><th>Timestamp</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Report</h2>
+  <button onclick="exportReport()">Export Report CSV</button>
+</div>
+
+<script>
+// ---------------- MAIN UI SCRIPT ----------------
+const daten={
+  "101011":{building:"ABC",level:"Level 24",room:"12345",door:"1",image:"DLevel1.jpg"},
+  "101012":{building:"ABC",level:"Level 24",room:"12346",door:"2",image:"DLevel2.jpg"}
+};
+const rooms=Object.entries(daten).map(([usid,info])=>({usid,...info}));
+
+const input=document.getElementById("roomInput");
+const searchBtn=document.getElementById("searchBtn");
+const resultView=document.getElementById("resultView");
+const mainWrapper=document.getElementById("mainWrapper");
+const resultCard=document.getElementById("resultCard");
+const resultImage=document.getElementById("resultImage");
+const resetBtn=document.getElementById("resetBtn");
+const countdownEl=document.getElementById("countdown");
+const thumbUp=document.getElementById("thumbUp");
+const thumbDown=document.getElementById("thumbDown");
+const comment=document.getElementById("feedbackComment");
+const sendFeedback=document.getElementById("sendFeedback");
+const thankYou=document.getElementById("thankYouMessage");
+const errorMsg=document.getElementById("errorMsg");
+const inputHint=document.querySelector(".inputHint");
+
+let secondsLeft=45, timer=null, rating=null, feedbackApplied=false;
+let autoResetTimer=null;
+
+function resetSearchField(){
+  input.value="";
+  searchBtn.disabled=true;
+  inputHint.style.display="block";
+  errorMsg.style.display="none";
+}
+
+input.addEventListener("input", ()=>{
+  input.value=input.value.replace(/\D/g,"").slice(0,6);
+  searchBtn.disabled=input.value.length !==6;
+  inputHint.style.display=input.value?"none":"block";
+  errorMsg.style.display="none";
+
+  clearTimeout(autoResetTimer);
+  if(input.value && input.value.length <6){
+    autoResetTimer=setTimeout(()=>{ resetSearchField(); },7000);
+  }
+});
+input.addEventListener("keydown", (e)=>{if(e.key==="Enter") searchBtn.click();});
+
+searchBtn.onclick=()=>{
+  const room=rooms.find(r=>r.usid===input.value);
+  if(!room){errorMsg.style.display="block"; return;}
+  mainWrapper.style.display="none";
+  resultView.style.display="flex";
+  resultCard.innerHTML=`
+    <div class="tile"><div class="label">Building</div><div class="value">${room.building}</div></div>
+    <div class="tile"><div class="label">Level</div><div class="value">${room.level}</div></div>
+    <div class="tile"><div class="label">Room</div><div class="value">${room.room}</div></div>
+    <div class="tile"><div class="label">Door</div><div class="value">${room.door}</div></div>
+  `;
+  resultImage.src=room.image+"?t="+Date.now();
+  rating=null; feedbackApplied=false;
+  thumbUp.style.background="var(--primary)";
+  thumbDown.style.background="var(--primary)";
+  thankYou.style.display="none";
+  comment.value=""; comment.placeholder="Optional comment (min 10 chars)";
+  comment.disabled=false; sendFeedback.disabled=false;
+  startTimer();
+};
+
+function startTimer(){
+  clearInterval(timer);
+  secondsLeft=45;
+  countdownEl.textContent=secondsLeft;
+  timer=setInterval(()=>{
+    secondsLeft--;
+    countdownEl.textContent=secondsLeft;
+    if(secondsLeft<=0) resetAll();
+  },1000);
+}
+resetBtn.onclick=resetAll;
+function resetAll(){clearInterval(timer);resultView.style.display="none";mainWrapper.style.display="flex";resetSearchField();}
+
+function applyFeedback(r){
+  if(feedbackApplied) return;
+  rating=r;
+  if(r==="up"){thumbUp.style.background="#10b981"; thumbDown.style.background="var(--primary)";}
+  else{thumbDown.style.background="#dc2626"; thumbUp.style.background="var(--primary)";}
+  secondsLeft+=15; feedbackApplied=true;
+}
+thumbUp.onclick=()=>applyFeedback("up");
+thumbDown.onclick=()=>applyFeedback("down");
+sendFeedback.onclick=()=>{
+  if(!rating){alert("Please select thumbs up or down"); return;}
+  if(comment.value && comment.value.trim().length>0 && comment.value.trim().length<10){
+    alert("Comment must be at least 10 characters"); return;
+  }
+  thankYou.style.display="block"; comment.disabled=true; sendFeedback.disabled=true;
+};
+
+// ---------------- ADMIN SCRIPT ----------------
+function simpleLogin(){
+  const pass = document.getElementById("adminPass").value;
+  if(pass==="1234"){ document.getElementById("adminContent").style.display="block"; alert("Admin logged in"); }
+  else alert("Wrong password");
+}
+function logout(){document.getElementById("adminContent").style.display="none";}
+function importFile(){alert("Import JSON called");}
+function uploadImage(){alert("Upload image called");}
+function exportFeedback(){alert("Export feedback CSV called");}
+function exportReport(){alert("Export report CSV called");}
+</script>
+
+</body>
+</html>

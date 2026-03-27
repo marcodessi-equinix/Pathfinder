@@ -1,0 +1,30 @@
+name: pathfinder
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      PORT: 3000
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      - pathfinder_data:/app/data
+      - pathfinder_uploads:/app/uploads
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: .
+      dockerfile: ./infra/nginx/Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "${APP_PORT:-9110}:80"
+    restart: unless-stopped
+
+volumes:
+  pathfinder_data:
+  pathfinder_uploads:

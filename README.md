@@ -16,9 +16,9 @@ PATHFINDER ist eine kioskoptimierte Wegfindungs-App mit Admin-Oberfläche. Das P
 - Ergebnisansicht mit Standort- und Bildinformationen
 - Feedback-Erfassung pro Suche
 - Admin-Login mit geschütztem Bereich
-- Räume anlegen, ändern, löschen und importieren
-- Bild-Upload für Raumansichten
-- CSV-Export für Feedback und Auswertungen
+- Räume anlegen, ändern, löschen, als Excel-Template exportieren und wieder importieren
+- Mehrfach-Bild-Upload mit Suche, Auswahl und Umbenennen für Raumansichten
+- XLSX-Export für Feedback und Auswertungen
 - Automatischer Import der Legacy-Daten aus old pascal/db.json beim ersten produktiven Start
 
 ## Projektstruktur
@@ -30,6 +30,10 @@ PATHFINDER ist eine kioskoptimierte Wegfindungs-App mit Admin-Oberfläche. Das P
 - old pascal: Altbestand als Referenz und Datenquelle für den Erstimport
 
 ## Voraussetzungen
+
+Für lokale `.env`-Nutzung:
+
+- `.env.example` nach `.env` kopieren und dort `ADMIN_PASSWORD` setzen
 
 Für lokale Entwicklung:
 
@@ -169,6 +173,8 @@ Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wir
 
 - Leere Startseite oder API-Fehler: Prüfen, ob der backend-Service läuft und Portainer beide Images erfolgreich gebaut hat.
 - Login funktioniert nicht: ADMIN_PASSWORD in Portainer oder .env prüfen und Stack neu deployen.
+- Raumimport: Im Admin-Bereich zuerst das Excel-Template exportieren, dann dieselben Spalten im ersten Arbeitsblatt beibehalten und die Datei wieder importieren.
+- Viele Bilder im Admin-Bereich: Die Bildbibliothek lädt nur eine Seite gleichzeitig und kann über die Suche gefiltert werden.
 - Bilder fehlen nach Redeploy: sicherstellen, dass die Volumes nicht gelöscht wurden.
 - Legacy-Daten fehlen: nur beim allerersten Start mit leerer Datenbank wird automatisch importiert.
 

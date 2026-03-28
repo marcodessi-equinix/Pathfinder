@@ -15,7 +15,24 @@ export type FeedbackEntry = {
   timestamp: string
 }
 
+export type ReportEntry = {
+  usid: string
+  searches: number
+  up: number
+  down: number
+  lastActivity: string
+}
+
 export type UploadedImage = {
+  fileName: string
   name: string
   path: string
+}
+
+export type UploadedImagePage = {
+  items: UploadedImage[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
 }

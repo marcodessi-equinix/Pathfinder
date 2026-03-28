@@ -2,7 +2,8 @@
   "name": "PATHFINDER",
   "short_name": "PATHFINDER",
   "start_url": "/",
-  "display": "standalone",
+  "display": "fullscreen",
+  "orientation": "portrait",
   "background_color": "#ffffff",
   "theme_color": "#111827",
   "icons": [

@@ -1,9 +1,11 @@
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
+import dotenv from 'dotenv'
+import ExcelJS from 'exceljs'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +28,20 @@ type FeedbackRow = {
   timestamp: string
 }
 
+type ReportRow = {
+  usid: string
+  searches: number
+  up: number
+  down: number
+  lastActivity: string
+}
+
+type UploadedImage = {
+  fileName: string
+  name: string
+  path: string
+}
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const backendDir = path.resolve(__dirname, '..')
@@ -33,6 +49,8 @@ const projectDir = path.resolve(backendDir, '..')
 const dataDir = path.join(backendDir, 'data')
 const uploadsDir = path.join(backendDir, 'uploads')
 const databaseFile = path.join(dataDir, 'pathfinder.sqlite')
+dotenv.config({ path: path.join(projectDir, '.env') })
+
 const legacyDatabaseCandidates = [
   path.join(backendDir, 'legacy', 'db.json'),
   path.join(projectDir, 'db.json'),
@@ -112,6 +130,16 @@ const importSchema = z.union([
   z.array(roomSchema),
 ])
 
+const imageQuerySchema = z.object({
+  query: z.string().trim().max(120).optional().default(''),
+  page: z.coerce.number().int().min(1).optional().default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).optional().default(24),
+})
+
+const renameImageSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+})
+
 const loginSchema = z.object({
   password: z.string().min(1),
 })
@@ -146,6 +174,7 @@ const listFeedbackStatement = database.prepare(
 const listAnalyticsStatement = database.prepare(
   'SELECT usid, timestamp FROM analytics ORDER BY timestamp DESC',
 )
+const updateRoomImageStatement = database.prepare('UPDATE rooms SET image = ? WHERE image = ?')
 
 function normalizeImagePath(image: string): string {
   if (!image) {
@@ -174,45 +203,139 @@ function listRooms(): Room[] {
   return listRoomsStatement.all() as Room[]
 }
 
-function buildReportCsv() {
-  const rows = new Map<string, { searches: number; up: number; down: number }>()
-  const analytics = listAnalyticsStatement.all() as Array<{ usid: string }>
-  const feedback = listFeedbackStatement.all() as Array<{ usid: string; rating: 'up' | 'down' }>
+function buildReportRows(): ReportRow[] {
+  const rows = new Map<string, ReportRow>()
+  const analytics = listAnalyticsStatement.all() as Array<{ usid: string; timestamp: string }>
+  const feedback = listFeedbackStatement.all() as Array<{
+    usid: string
+    rating: 'up' | 'down'
+    timestamp: string
+  }>
+
+  function getOrCreateRow(usid: string, timestamp: string) {
+    const existing = rows.get(usid)
+    if (existing) {
+      if (timestamp > existing.lastActivity) {
+        existing.lastActivity = timestamp
+      }
+      return existing
+    }
+
+    const created: ReportRow = {
+      usid,
+      searches: 0,
+      up: 0,
+      down: 0,
+      lastActivity: timestamp,
+    }
+    rows.set(usid, created)
+    return created
+  }
 
   for (const row of analytics) {
-    const current = rows.get(row.usid) ?? { searches: 0, up: 0, down: 0 }
+    const current = getOrCreateRow(row.usid, row.timestamp)
     current.searches += 1
-    rows.set(row.usid, current)
   }
 
   for (const row of feedback) {
-    const current = rows.get(row.usid) ?? { searches: 0, up: 0, down: 0 }
+    const current = getOrCreateRow(row.usid, row.timestamp)
     if (row.rating === 'up') {
       current.up += 1
     } else {
       current.down += 1
     }
-    rows.set(row.usid, current)
   }
 
-  const lines = ['USID,Searches,Up,Down']
-  for (const [usid, values] of rows.entries()) {
-    lines.push(`${usid},${values.searches},${values.up},${values.down}`)
-  }
+  return Array.from(rows.values()).sort((left, right) => {
+    if (left.lastActivity !== right.lastActivity) {
+      return right.lastActivity.localeCompare(left.lastActivity)
+    }
 
-  return lines.join('\n')
+    if (left.searches !== right.searches) {
+      return right.searches - left.searches
+    }
+
+    return left.usid.localeCompare(right.usid)
+  })
 }
 
-function buildFeedbackCsv() {
-  const rows = listFeedbackStatement.all() as FeedbackRow[]
-  const lines = ['USID,Rating,Comment,Timestamp']
-
-  for (const row of rows) {
-    const safeComment = row.comment.replaceAll('"', '""')
-    lines.push(`${row.usid},${row.rating},"${safeComment}",${row.timestamp}`)
+function styleWorksheetHeader(worksheet: ExcelJS.Worksheet) {
+  const headerRow = worksheet.getRow(1)
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+  headerRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF0F766E' },
   }
 
-  return lines.join('\n')
+  headerRow.eachCell((cell) => {
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+      left: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+      bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+      right: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+    }
+    cell.alignment = { vertical: 'middle', horizontal: 'center' }
+  })
+
+  worksheet.views = [{ state: 'frozen', ySplit: 1 }]
+  worksheet.autoFilter = {
+    from: 'A1',
+    to: `${worksheet.getRow(1).cellCount > 0 ? worksheet.getColumn(worksheet.getRow(1).cellCount).letter : 'A'}1`,
+  }
+}
+
+async function buildReportWorkbookBuffer() {
+  const workbook = new ExcelJS.Workbook()
+  const worksheet = workbook.addWorksheet('Report')
+  const rows = buildReportRows()
+
+  worksheet.columns = [
+    { header: 'USID', key: 'usid', width: 14 },
+    { header: 'Searches', key: 'searches', width: 14 },
+    { header: 'Thumbs Up', key: 'up', width: 14 },
+    { header: 'Thumbs Down', key: 'down', width: 16 },
+    { header: 'Last Activity', key: 'lastActivity', width: 24 },
+  ]
+
+  for (const row of rows) {
+    worksheet.addRow({
+      usid: row.usid,
+      searches: row.searches,
+      up: row.up,
+      down: row.down,
+      lastActivity: row.lastActivity,
+    })
+  }
+
+  styleWorksheetHeader(worksheet)
+  return Buffer.from(await workbook.xlsx.writeBuffer())
+}
+
+async function buildFeedbackWorkbookBuffer() {
+  const workbook = new ExcelJS.Workbook()
+  const worksheet = workbook.addWorksheet('Feedback')
+  const rows = listFeedbackStatement.all() as FeedbackRow[]
+
+  worksheet.columns = [
+    { header: 'USID', key: 'usid', width: 14 },
+    { header: 'Rating', key: 'rating', width: 12 },
+    { header: 'Comment', key: 'comment', width: 48 },
+    { header: 'Timestamp', key: 'timestamp', width: 24 },
+  ]
+
+  for (const row of rows) {
+    worksheet.addRow({
+      usid: row.usid,
+      rating: row.rating,
+      comment: row.comment,
+      timestamp: row.timestamp,
+    })
+  }
+
+  styleWorksheetHeader(worksheet)
+  worksheet.getColumn('comment').alignment = { wrapText: true, vertical: 'top' }
+  return Buffer.from(await workbook.xlsx.writeBuffer())
 }
 
 function runInTransaction<T>(callback: () => T) {
@@ -321,6 +444,91 @@ function parseImportPayload(payload: unknown): Room[] {
   }))
 }
 
+function getUploadExtension(file: Express.Multer.File) {
+  const extension = path.extname(file.originalname).toLowerCase()
+  if (/^\.[a-z0-9]+$/.test(extension)) {
+    return extension
+  }
+
+  switch (file.mimetype) {
+    case 'image/jpeg':
+      return '.jpg'
+    case 'image/png':
+      return '.png'
+    case 'image/webp':
+      return '.webp'
+    case 'image/gif':
+      return '.gif'
+    case 'image/svg+xml':
+      return '.svg'
+    default:
+      return ''
+  }
+}
+
+function sanitizeImageBaseName(name: string) {
+  const normalized = name
+    .normalize('NFKD')
+    .replace(/[^\x00-\x7F]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized.slice(0, 80) || `image-${Date.now()}`
+}
+
+function buildUniqueImageFileName(rawName: string, extension: string, currentFileName?: string) {
+  const safeBaseName = sanitizeImageBaseName(rawName)
+  const safeExtension = extension.toLowerCase()
+  let candidate = `${safeBaseName}${safeExtension}`
+  let counter = 2
+
+  while (candidate !== currentFileName && existsSync(path.join(uploadsDir, candidate))) {
+    candidate = `${safeBaseName}-${counter}${safeExtension}`
+    counter += 1
+  }
+
+  return candidate
+}
+
+function getImageDisplayName(fileName: string) {
+  return path.basename(fileName, path.extname(fileName))
+}
+
+function toUploadedImage(fileName: string): UploadedImage {
+  return {
+    fileName,
+    name: getImageDisplayName(fileName),
+    path: `/uploads/${encodeURIComponent(fileName)}`,
+  }
+}
+
+function listUploadedImages() {
+  return readdirSync(uploadsDir)
+    .filter((fileName) => !fileName.startsWith('.'))
+    .sort((left, right) => left.localeCompare(right))
+    .map((fileName) => toUploadedImage(fileName))
+}
+
+function renameImageFile(fileName: string, name: string) {
+  const sourceFile = path.basename(fileName)
+  const sourcePath = path.join(uploadsDir, sourceFile)
+
+  if (!existsSync(sourcePath)) {
+    throw new Error('Image not found.')
+  }
+
+  const extension = path.extname(sourceFile).toLowerCase()
+  const targetFileName = buildUniqueImageFileName(name, extension, sourceFile)
+
+  if (targetFileName !== sourceFile) {
+    renameSync(sourcePath, path.join(uploadsDir, targetFileName))
+    updateRoomImageStatement.run(`/uploads/${encodeURIComponent(targetFileName)}`, `/uploads/${encodeURIComponent(sourceFile)}`)
+  }
+
+  return toUploadedImage(targetFileName)
+}
+
 ensureLegacyImport()
 
 if (adminPassword === 'change-me') {
@@ -329,9 +537,22 @@ if (adminPassword === 'change-me') {
 
 const app = express()
 const upload = multer({
-  dest: uploadsDir,
+  storage: multer.diskStorage({
+    destination: (_req, _file, callback) => {
+      callback(null, uploadsDir)
+    },
+    filename: (_req, file, callback) => {
+      const extension = getUploadExtension(file)
+      const originalBaseName = path.basename(file.originalname, path.extname(file.originalname))
+      callback(null, buildUniqueImageFileName(originalBaseName, extension || '.bin'))
+    },
+  }),
   limits: {
     fileSize: 10 * 1024 * 1024,
+    files: 50,
+  },
+  fileFilter: (_req, file, callback) => {
+    callback(null, file.mimetype.startsWith('image/'))
   },
 })
 
@@ -474,44 +695,90 @@ app.post('/api/admin/import', requireAdmin, (req, res) => {
   res.json({ ok: true, imported: rooms.length })
 })
 
-app.post('/api/admin/upload-image', requireAdmin, upload.single('image'), (req, res) => {
-  if (!req.file) {
-    res.status(400).json({ error: 'No image uploaded.' })
+app.post('/api/admin/upload-images', requireAdmin, upload.array('images', 50), (req, res) => {
+  const files = (req.files ?? []) as Express.Multer.File[]
+
+  if (files.length === 0) {
+    res.status(400).json({ error: 'No valid images uploaded.' })
     return
   }
 
   res.status(201).json({
-    fileName: req.file.filename,
-    path: `/uploads/${req.file.filename}`,
+    uploaded: files.map((file) => toUploadedImage(file.filename)),
   })
 })
 
-app.get('/api/admin/images', requireAdmin, (_req, res) => {
-  const files = readdirSync(uploadsDir)
-    .filter((fileName) => !fileName.startsWith('.'))
-    .sort((left, right) => left.localeCompare(right))
-    .map((fileName) => ({
-      name: fileName,
-      path: `/uploads/${fileName}`,
-    }))
+app.get('/api/admin/images', requireAdmin, (req, res) => {
+  const payload = imageQuerySchema.safeParse(req.query)
+  if (!payload.success) {
+    res.status(400).json({ error: 'Invalid image query.' })
+    return
+  }
 
-  res.json(files)
+  const query = payload.data.query.toLowerCase()
+  const allImages = listUploadedImages().filter((image) => {
+    if (!query) {
+      return true
+    }
+
+    return [image.fileName, image.name, image.path].some((value) => value.toLowerCase().includes(query))
+  })
+
+  const total = allImages.length
+  const totalPages = Math.max(1, Math.ceil(total / payload.data.pageSize))
+  const page = Math.min(payload.data.page, totalPages)
+  const startIndex = (page - 1) * payload.data.pageSize
+  const items = allImages.slice(startIndex, startIndex + payload.data.pageSize)
+
+  res.json({
+    items,
+    total,
+    page,
+    pageSize: payload.data.pageSize,
+    totalPages,
+  })
+})
+
+app.patch('/api/admin/images/:fileName', requireAdmin, (req, res) => {
+  const payload = renameImageSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  try {
+    const image = renameImageFile(String(req.params.fileName ?? ''), payload.data.name)
+    res.json({ ok: true, image })
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(404).json({ error: error.message })
+      return
+    }
+
+    throw error
+  }
 })
 
 app.get('/api/admin/feedback', requireAdmin, (_req, res) => {
   res.json(listFeedbackStatement.all() as FeedbackRow[])
 })
 
-app.get('/api/admin/report.csv', requireAdmin, (_req, res) => {
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
-  res.setHeader('Content-Disposition', 'attachment; filename="pathfinder-report.csv"')
-  res.send(buildReportCsv())
+app.get('/api/admin/report', requireAdmin, (_req, res) => {
+  res.json(buildReportRows())
 })
 
-app.get('/api/admin/feedback.csv', requireAdmin, (_req, res) => {
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
-  res.setHeader('Content-Disposition', 'attachment; filename="pathfinder-feedback.csv"')
-  res.send(buildFeedbackCsv())
+app.get('/api/admin/report.xlsx', requireAdmin, async (_req, res) => {
+  const workbook = await buildReportWorkbookBuffer()
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', 'attachment; filename="pathfinder-report.xlsx"')
+  res.send(workbook)
+})
+
+app.get('/api/admin/feedback.xlsx', requireAdmin, async (_req, res) => {
+  const workbook = await buildFeedbackWorkbookBuffer()
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', 'attachment; filename="pathfinder-feedback.xlsx"')
+  res.send(workbook)
 })
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

@@ -1,4 +1,4 @@
-import type { FeedbackEntry, Room, UploadedImage } from './types'
+import type { FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
 
 const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 
@@ -94,11 +94,13 @@ export function importRooms(payload: unknown) {
   })
 }
 
-export async function uploadImage(file: File) {
+export async function uploadImages(files: File[]) {
   const formData = new FormData()
-  formData.append('image', file)
+  for (const file of files) {
+    formData.append('images', file)
+  }
 
-  const response = await fetch(`${apiBase}/api/admin/upload-image`, {
+  const response = await fetch(`${apiBase}/api/admin/upload-images`, {
     method: 'POST',
     body: formData,
     credentials: 'include',
@@ -109,15 +111,32 @@ export async function uploadImage(file: File) {
     throw new Error(String(payload.error ?? 'Upload failed'))
   }
 
-  return payload as { fileName: string; path: string }
+  return payload as { uploaded: UploadedImage[] }
 }
 
-export function getImages() {
-  return request<UploadedImage[]>('/api/admin/images')
+export function getImages(query = '', page = 1, pageSize = 24) {
+  const params = new URLSearchParams({
+    query,
+    page: String(page),
+    pageSize: String(pageSize),
+  })
+
+  return request<UploadedImagePage>(`/api/admin/images?${params.toString()}`)
+}
+
+export function renameImage(fileName: string, name: string) {
+  return request<{ ok: true; image: UploadedImage }>(`/api/admin/images/${encodeURIComponent(fileName)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
 }
 
 export function getFeedback() {
   return request<FeedbackEntry[]>('/api/admin/feedback')
+}
+
+export function getReport() {
+  return request<ReportEntry[]>('/api/admin/report')
 }
 
 export function getDownloadUrl(path: string) {

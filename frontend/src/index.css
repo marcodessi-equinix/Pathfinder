@@ -11,6 +11,13 @@
   -moz-osx-font-smoothing: grayscale;
 
   --primary: #111827;
+  --primary-strong: #0f172a;
+  --primary-soft: #e5e7eb;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --signal: #0f766e;
+  --signal-soft: #ccfbf1;
+  --rose-soft: #ffe4e6;
   --card: #f3f4f6;
   --surface: #ffffff;
   --text-strong: #111827;
@@ -25,13 +32,21 @@ html,
 body,
 #root {
   min-height: 100%;
+  min-height: 100svh;
   margin: 0;
 }
 
 body {
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top, rgba(255, 255, 255, 0.88), rgba(244, 246, 248, 0.92)),
     linear-gradient(180deg, #ffffff 0%, #edf2f7 100%);
+}
+
+body.kiosk-mode {
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
 }
 
 button,

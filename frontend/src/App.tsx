@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteRoom,
   getAdminSession,
+  getBuildingTemplates,
   getDownloadUrl,
   getFeedback,
   getImages,
+  getPublicBuildingTemplates,
   getReport,
   getRooms,
   importRooms,
@@ -18,7 +20,7 @@ import {
   uploadImages,
 } from './api'
 import './App.css'
-import type { FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
+import type { BuildingTemplate, FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
 
 type RoomForm = {
   usid: string
@@ -152,11 +154,21 @@ function formatRelativeCount(value: number, singular: string, plural: string) {
   return `${value} ${value === 1 ? singular : plural}`
 }
 
+function normalizeTemplateLookup(value: string) {
+  return value
+    .normalize('NFKD')
+    .replace(/[^\x00-\x7F]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+}
+
 const kioskDigits = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const
 
 function KioskApp() {
   const [input, setInput] = useState('')
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null)
+  const [selectedTemplate, setSelectedTemplate] = useState<BuildingTemplate | null>(null)
+  const [buildingTemplates, setBuildingTemplates] = useState<BuildingTemplate[]>([])
   const [error, setError] = useState('')
   const [secondsLeft, setSecondsLeft] = useState(45)
   const [rating, setRating] = useState<'up' | 'down' | null>(null)
@@ -178,7 +190,17 @@ function KioskApp() {
   }, [])
 
   useEffect(() => {
-    if (!selectedRoom) {
+    void getPublicBuildingTemplates()
+      .then((response) => {
+        setBuildingTemplates(response)
+      })
+      .catch(() => {
+        setBuildingTemplates([])
+      })
+  }, [])
+
+  useEffect(() => {
+    if (!selectedRoom && !selectedTemplate) {
       return undefined
     }
 
@@ -186,6 +208,7 @@ function KioskApp() {
       setSecondsLeft((current) => {
         if (current <= 1) {
           setSelectedRoom(null)
+          setSelectedTemplate(null)
           setInput('')
           setRating(null)
           setComment('')
@@ -198,10 +221,10 @@ function KioskApp() {
     }, 1000)
 
     return () => window.clearInterval(timer)
-  }, [selectedRoom])
+  }, [selectedRoom, selectedTemplate])
 
   useEffect(() => {
-    if (selectedRoom) {
+    if (selectedRoom || selectedTemplate) {
       return undefined
     }
 
@@ -220,7 +243,7 @@ function KioskApp() {
         window.clearTimeout(resetTimeoutRef.current)
       }
     }
-  }, [input, selectedRoom])
+  }, [input, selectedRoom, selectedTemplate])
 
   async function runSearch(usid: string) {
     if (usid.length !== 6) {
@@ -233,6 +256,7 @@ function KioskApp() {
     try {
       const room = await searchRoom(usid)
       setSelectedRoom(room)
+      setSelectedTemplate(null)
       setSecondsLeft(45)
       setRating(null)
       setComment('')
@@ -297,6 +321,7 @@ function KioskApp() {
 
   function resetView() {
     setSelectedRoom(null)
+    setSelectedTemplate(null)
     setInput('')
     setRating(null)
     setComment('')
@@ -305,9 +330,19 @@ function KioskApp() {
     setSecondsLeft(45)
   }
 
+  function handleTemplatePreview(template: BuildingTemplate) {
+    setSelectedTemplate(template)
+    setSelectedRoom(null)
+    setError('')
+    setSecondsLeft(45)
+    setRating(null)
+    setComment('')
+    setFeedbackSent(false)
+  }
+
   return (
     <main className="kiosk-shell">
-      {!selectedRoom ? (
+      {!selectedRoom && !selectedTemplate ? (
         <section className="kiosk-home">
           <div className="kiosk-home-content">
             <img src="/logo.jpg" className="brand-logo" alt="Pathfinder logo" />
@@ -364,6 +399,24 @@ function KioskApp() {
               {isSearching ? <p className="status-message is-info">Searching...</p> : null}
               {error ? <p className="error-message">{error}</p> : null}
             </div>
+
+            {buildingTemplates.length > 0 ? (
+              <section className="kiosk-template-section" aria-label="Building and phase shortcuts">
+                <p className="kiosk-template-title">Plan direkt oeffnen</p>
+                <div className="kiosk-template-grid">
+                  {buildingTemplates.map((template) => (
+                    <button
+                      key={template.fileName}
+                      type="button"
+                      className="kiosk-template-button"
+                      onClick={() => handleTemplatePreview(template)}
+                    >
+                      {template.building}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
           </div>
         </section>
       ) : (
@@ -378,69 +431,89 @@ function KioskApp() {
               </div>
             </div>
 
-            <h1 className="destination-title">YOUR DESTINATION</h1>
-            <p className="destination-subtitle">The destination is highlighted in green</p>
+            <h1 className="destination-title">{selectedRoom ? 'YOUR DESTINATION' : 'SITE PLAN'}</h1>
+            <p className="destination-subtitle">
+              {selectedRoom ? 'The destination is highlighted in green' : 'Selected building or phase overview'}
+            </p>
 
-            <div className="info-grid">
-              <article className="tile">
-                <span className="tile-label">Building</span>
-                <strong className="tile-value">{selectedRoom.building}</strong>
-              </article>
-              <article className="tile">
-                <span className="tile-label">Level</span>
-                <strong className="tile-value">{selectedRoom.level}</strong>
-              </article>
-              <article className="tile">
-                <span className="tile-label">Room</span>
-                <strong className="tile-value">{selectedRoom.room}</strong>
-              </article>
-              <article className="tile">
-                <span className="tile-label">Door</span>
-                <strong className="tile-value">{selectedRoom.door}</strong>
-              </article>
-            </div>
+            {selectedRoom ? (
+              <div className="info-grid">
+                <article className="tile">
+                  <span className="tile-label">Building</span>
+                  <strong className="tile-value">{selectedRoom.building}</strong>
+                </article>
+                <article className="tile">
+                  <span className="tile-label">Level</span>
+                  <strong className="tile-value">{selectedRoom.level}</strong>
+                </article>
+                <article className="tile">
+                  <span className="tile-label">Room</span>
+                  <strong className="tile-value">{selectedRoom.room}</strong>
+                </article>
+                <article className="tile">
+                  <span className="tile-label">Door</span>
+                  <strong className="tile-value">{selectedRoom.door}</strong>
+                </article>
+              </div>
+            ) : selectedTemplate ? (
+              <div className="info-grid preview-info-grid">
+                <article className="tile">
+                  <span className="tile-label">Area</span>
+                  <strong className="tile-value">{selectedTemplate.building}</strong>
+                </article>
+              </div>
+            ) : null}
 
             <div className="result-visual">
-              {selectedRoom.image ? (
+              {selectedRoom?.image ? (
                 <img className="result-image" src={resolveAssetUrl(selectedRoom.image)} alt={`Route to room ${selectedRoom.room}`} />
+              ) : null}
+              {!selectedRoom && selectedTemplate ? (
+                <img className="result-image" src={resolveAssetUrl(selectedTemplate.path)} alt={selectedTemplate.building} />
               ) : null}
             </div>
 
-            <p className="pickup-hint">Pick up keys or cards if needed.</p>
+            <p className="pickup-hint">
+              {selectedRoom ? 'Pick up keys or cards if needed.' : 'Use back to return to the USID search.'}
+            </p>
 
-            <div className="feedback-row">
-              <button
-                className={`feedback-button ${rating === 'up' ? 'is-positive' : ''}`}
-                onClick={() => {
-                  setRating('up')
-                  setSecondsLeft((current) => current + (rating ? 0 : 15))
-                }}
-              >
-                👍
-              </button>
-              <button
-                className={`feedback-button ${rating === 'down' ? 'is-negative' : ''}`}
-                onClick={() => {
-                  setRating('down')
-                  setSecondsLeft((current) => current + (rating ? 0 : 15))
-                }}
-              >
-                👎
-              </button>
-              <input
-                className="feedback-input"
-                type="text"
-                value={comment}
-                onChange={(event) => setComment(event.target.value)}
-                placeholder="Optional comment (min 10 chars)"
-                disabled={feedbackSent}
-              />
-              <button className="primary-button compact" disabled={feedbackSent} onClick={() => void handleSendFeedback()}>
-                Send
-              </button>
-            </div>
+            {selectedRoom ? (
+              <>
+                <div className="feedback-row">
+                  <button
+                    className={`feedback-button ${rating === 'up' ? 'is-positive' : ''}`}
+                    onClick={() => {
+                      setRating('up')
+                      setSecondsLeft((current) => current + (rating ? 0 : 15))
+                    }}
+                  >
+                    👍
+                  </button>
+                  <button
+                    className={`feedback-button ${rating === 'down' ? 'is-negative' : ''}`}
+                    onClick={() => {
+                      setRating('down')
+                      setSecondsLeft((current) => current + (rating ? 0 : 15))
+                    }}
+                  >
+                    👎
+                  </button>
+                  <input
+                    className="feedback-input"
+                    type="text"
+                    value={comment}
+                    onChange={(event) => setComment(event.target.value)}
+                    placeholder="Optional comment (min 10 chars)"
+                    disabled={feedbackSent}
+                  />
+                  <button className="primary-button compact" disabled={feedbackSent} onClick={() => void handleSendFeedback()}>
+                    Send
+                  </button>
+                </div>
 
-            {feedbackSent ? <p className="thank-you">Thank you!</p> : null}
+                {feedbackSent ? <p className="thank-you">Thank you!</p> : null}
+              </>
+            ) : null}
           </div>
         </section>
       )}
@@ -459,6 +532,7 @@ function AdminApp() {
   const [roomForm, setRoomForm] = useState<RoomForm>(emptyRoom)
   const [statusNotice, setStatusNotice] = useState<StatusNotice | null>(null)
   const [imagePageData, setImagePageData] = useState<UploadedImagePage>(createEmptyImagePage)
+  const [buildingTemplates, setBuildingTemplates] = useState<BuildingTemplate[]>([])
   const [imageQuery, setImageQuery] = useState('')
   const [imagePage, setImagePage] = useState(1)
   const [imageRenameDrafts, setImageRenameDrafts] = useState<Record<string, string>>({})
@@ -481,11 +555,12 @@ function AdminApp() {
       return
     }
 
-    void Promise.all([getRooms(), getFeedback(), getReport()])
-      .then(([roomsResponse, feedbackResponse, reportResponse]) => {
+    void Promise.all([getRooms(), getFeedback(), getReport(), getBuildingTemplates()])
+      .then(([roomsResponse, feedbackResponse, reportResponse, templateResponse]) => {
         setRooms(roomsResponse)
         setFeedback(feedbackResponse)
         setReport(reportResponse)
+        setBuildingTemplates(templateResponse)
       })
       .catch((error) => {
         setStatusNotice({
@@ -532,6 +607,36 @@ function AdminApp() {
       ),
     )
   }, [rooms, searchTerm])
+
+  const matchingBuildingTemplates = useMemo(() => {
+    const buildingKey = normalizeTemplateLookup(roomForm.building)
+
+    if (!buildingKey) {
+      return buildingTemplates
+    }
+
+    return buildingTemplates
+      .map((template) => {
+        const templateKey = normalizeTemplateLookup(template.building)
+        const isExact = templateKey === buildingKey
+        const isPartial = templateKey.includes(buildingKey) || buildingKey.includes(templateKey)
+
+        return {
+          template,
+          isExact,
+          isPartial,
+        }
+      })
+      .filter((entry) => entry.isExact || entry.isPartial)
+      .sort((left, right) => {
+        if (left.isExact !== right.isExact) {
+          return Number(right.isExact) - Number(left.isExact)
+        }
+
+        return left.template.building.localeCompare(right.template.building)
+      })
+      .map((entry) => entry.template)
+  }, [buildingTemplates, roomForm.building])
 
   const recentFeedback = feedback.slice(0, 5)
   const recentReport = report.slice(0, 5)
@@ -590,6 +695,7 @@ function AdminApp() {
     await logout()
     setAuthenticated(false)
     setStatusNotice(null)
+    setBuildingTemplates([])
     setImagePageData(createEmptyImagePage())
     setImageRenameDrafts({})
   }
@@ -714,6 +820,15 @@ function AdminApp() {
     }
   }
 
+  function handleUseBuildingTemplate(template: BuildingTemplate) {
+    setRoomForm((current) => ({
+      ...current,
+      building: current.building || template.building,
+      image: template.path,
+    }))
+    setStatusNotice({ tone: 'info', message: `Building template ${template.building} selected.` })
+  }
+
   if (!authenticated) {
     return (
       <main className="admin-login-shell">
@@ -781,7 +896,7 @@ function AdminApp() {
       <section className="admin-grid">
         <article className="admin-card emphasis-card">
           <h2>Room Editor</h2>
-          <p className="muted-text">Update a room directly or pull an image from the library below.</p>
+          <p className="muted-text">Update a room directly or use a saved building template before falling back to the image library.</p>
           <div className="form-grid">
             <input placeholder="USID" value={roomForm.usid} onChange={(event) => setRoomForm({ ...roomForm, usid: event.target.value.replace(/\D/g, '').slice(0, 6) })} />
             <input placeholder="Building" value={roomForm.building} onChange={(event) => setRoomForm({ ...roomForm, building: event.target.value })} />
@@ -789,6 +904,46 @@ function AdminApp() {
             <input placeholder="Room" value={roomForm.room} onChange={(event) => setRoomForm({ ...roomForm, room: event.target.value })} />
             <input placeholder="Door" value={roomForm.door} onChange={(event) => setRoomForm({ ...roomForm, door: event.target.value })} />
             <input placeholder="Image path" value={roomForm.image} onChange={(event) => setRoomForm({ ...roomForm, image: event.target.value })} />
+          </div>
+          <div className="template-panel">
+            <div className="template-panel-head">
+              <div>
+                <h3>Building Templates</h3>
+                <p className="muted-text">
+                  {roomForm.building
+                    ? matchingBuildingTemplates.length > 0
+                      ? `Showing template matches for ${roomForm.building}.`
+                      : `No saved template matches ${roomForm.building} yet.`
+                    : 'Choose one of the saved floor plan templates.'}
+                </p>
+              </div>
+              <span className="template-count">{matchingBuildingTemplates.length} available</span>
+            </div>
+
+            {matchingBuildingTemplates.length > 0 ? (
+              <div className="template-library-grid">
+                {matchingBuildingTemplates.map((template) => (
+                  <article
+                    key={template.fileName}
+                    className={`template-card ${roomForm.image === template.path ? 'is-selected' : ''}`}
+                  >
+                    <img src={resolveAssetUrl(template.path)} alt={template.building} />
+                    <div className="template-card-meta">
+                      <strong>{template.building}</strong>
+                      <span>{template.fileName}</span>
+                    </div>
+                    <button
+                      className="secondary-button compact"
+                      onClick={() => handleUseBuildingTemplate(template)}
+                    >
+                      Use template
+                    </button>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="muted-text">Add a building name or place more template files in FR2_Grundriss.</p>
+            )}
           </div>
           {roomForm.image ? (
             <div className="selected-image-panel">

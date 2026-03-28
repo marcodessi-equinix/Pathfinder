@@ -29,6 +29,13 @@ export type UploadedImage = {
   path: string
 }
 
+export type BuildingTemplate = {
+  fileName: string
+  name: string
+  building: string
+  path: string
+}
+
 export type UploadedImagePage = {
   items: UploadedImage[]
   total: number

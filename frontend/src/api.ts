@@ -1,4 +1,4 @@
-import type { FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
+import type { BuildingTemplate, FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
 
 const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 
@@ -32,7 +32,7 @@ export function resolveAssetUrl(path: string) {
     return ''
   }
 
-  if (path.startsWith('/uploads/')) {
+  if (path.startsWith('/uploads/') || path.startsWith('/building-templates/')) {
     return `${apiBase}${path}`
   }
 
@@ -122,6 +122,14 @@ export function getImages(query = '', page = 1, pageSize = 24) {
   })
 
   return request<UploadedImagePage>(`/api/admin/images?${params.toString()}`)
+}
+
+export function getBuildingTemplates() {
+  return request<BuildingTemplate[]>('/api/admin/building-templates')
+}
+
+export function getPublicBuildingTemplates() {
+  return request<BuildingTemplate[]>('/api/building-templates')
 }
 
 export function renameImage(fileName: string, name: string) {

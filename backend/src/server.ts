@@ -42,12 +42,20 @@ type UploadedImage = {
   path: string
 }
 
+type BuildingTemplate = {
+  fileName: string
+  name: string
+  building: string
+  path: string
+}
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const backendDir = path.resolve(__dirname, '..')
 const projectDir = path.resolve(backendDir, '..')
 const dataDir = path.join(backendDir, 'data')
 const uploadsDir = path.join(backendDir, 'uploads')
+const buildingTemplatesDir = path.join(backendDir, 'FR2_Grundriss')
 const databaseFile = path.join(dataDir, 'pathfinder.sqlite')
 dotenv.config({ path: path.join(projectDir, '.env') })
 
@@ -61,6 +69,7 @@ const frontendOrigin = process.env.FRONTEND_ORIGIN
 const cookieSecure = (process.env.COOKIE_SECURE ?? 'false').toLowerCase() === 'true'
 const sessionCookieName = 'pathfinder_admin'
 const sessionDurationMs = 8 * 60 * 60 * 1000
+const supportedImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg'])
 
 mkdirSync(dataDir, { recursive: true })
 mkdirSync(uploadsDir, { recursive: true })
@@ -494,6 +503,10 @@ function getImageDisplayName(fileName: string) {
   return path.basename(fileName, path.extname(fileName))
 }
 
+function formatTemplateName(fileName: string) {
+  return getImageDisplayName(fileName).replace(/_/g, ' ').trim()
+}
+
 function toUploadedImage(fileName: string): UploadedImage {
   return {
     fileName,
@@ -507,6 +520,38 @@ function listUploadedImages() {
     .filter((fileName) => !fileName.startsWith('.'))
     .sort((left, right) => left.localeCompare(right))
     .map((fileName) => toUploadedImage(fileName))
+}
+
+function listBuildingTemplates(): BuildingTemplate[] {
+  if (!existsSync(buildingTemplatesDir)) {
+    return []
+  }
+
+  return readdirSync(buildingTemplatesDir)
+    .filter((fileName) => supportedImageExtensions.has(path.extname(fileName).toLowerCase()))
+    .sort((left, right) => left.localeCompare(right))
+    .map((fileName) => {
+      const name = formatTemplateName(fileName)
+
+      return {
+        fileName,
+        name,
+        building: name,
+        path: `/building-templates/${encodeURIComponent(fileName)}`,
+      }
+    })
+}
+
+function listPublicBuildingTemplates(): BuildingTemplate[] {
+  return listBuildingTemplates().filter((template) => normalizeTemplateName(template.fileName) !== 'fr2grundriss')
+}
+
+function normalizeTemplateName(value: string) {
+  return getImageDisplayName(value)
+    .normalize('NFKD')
+    .replace(/[^\x00-\x7F]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
 }
 
 function renameImageFile(fileName: string, name: string) {
@@ -566,6 +611,7 @@ app.use(
 app.use(cookieParser())
 app.use(express.json({ limit: '2mb' }))
 app.use('/uploads', express.static(uploadsDir))
+app.use('/building-templates', express.static(buildingTemplatesDir))
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })
@@ -604,6 +650,10 @@ app.post('/api/feedback', (req, res) => {
   )
 
   res.status(201).json({ ok: true })
+})
+
+app.get('/api/building-templates', (_req, res) => {
+  res.json(listPublicBuildingTemplates())
 })
 
 app.get('/api/admin/session', (req, res) => {
@@ -736,6 +786,10 @@ app.get('/api/admin/images', requireAdmin, (req, res) => {
     pageSize: payload.data.pageSize,
     totalPages,
   })
+})
+
+app.get('/api/admin/building-templates', requireAdmin, (_req, res) => {
+  res.json(listBuildingTemplates())
 })
 
 app.patch('/api/admin/images/:fileName', requireAdmin, (req, res) => {

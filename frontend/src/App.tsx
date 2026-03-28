@@ -402,7 +402,6 @@ function KioskApp() {
 
             {buildingTemplates.length > 0 ? (
               <section className="kiosk-template-section" aria-label="Building and phase shortcuts">
-                <p className="kiosk-template-title">Plan direkt oeffnen</p>
                 <div className="kiosk-template-grid">
                   {buildingTemplates.map((template) => (
                     <button

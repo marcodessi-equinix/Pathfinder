@@ -20,6 +20,7 @@ COPY backend/package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
+COPY backend/FR2_Grundriss ./FR2_Grundriss
 
 RUN mkdir -p /app/data /app/uploads
 

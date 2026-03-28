@@ -19,7 +19,7 @@ PATHFINDER ist eine kioskoptimierte Wegfindungs-App mit Admin-Oberfläche. Das P
 - Räume anlegen, ändern, löschen, als Excel-Template exportieren und wieder importieren
 - Mehrfach-Bild-Upload mit Suche, Auswahl und Umbenennen für Raumansichten
 - XLSX-Export für Feedback und Auswertungen
-- Automatischer Import der Legacy-Daten aus old pascal/db.json beim ersten produktiven Start
+- Optionaler Erstimport aus einer vorhandenen `db.json` bei leerer Datenbank
 
 ## Projektstruktur
 
@@ -27,7 +27,6 @@ PATHFINDER ist eine kioskoptimierte Wegfindungs-App mit Admin-Oberfläche. Das P
 - backend: Express-API, SQLite und Upload-Verwaltung
 - infra/nginx: Nginx-Konfiguration für Produktion
 - compose.yaml: kompletter Produktions-Stack für Docker und Portainer
-- old pascal: Altbestand als Referenz und Datenquelle für den Erstimport
 
 ## Voraussetzungen
 
@@ -143,7 +142,7 @@ Danach baut Portainer beide Images direkt aus dem Repository und startet den kom
 
 - SQLite-Datenbank: Docker-Volume pathfinder_data
 - Uploads: Docker-Volume pathfinder_uploads
-- Legacy-Erstimport: Wird nur ausgeführt, wenn die Datenbank noch leer ist
+- Optionaler Erstimport aus `backend/legacy/db.json` oder `db.json`: Wird nur ausgeführt, wenn die Datenbank noch leer ist
 
 Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wird der Legacy-Import danach nicht erneut ausgeführt. In dem Fall musst du entweder importieren oder das Daten-Volume bewusst neu anlegen.
 
@@ -176,9 +175,8 @@ Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wir
 - Raumimport: Im Admin-Bereich zuerst das Excel-Template exportieren, dann dieselben Spalten im ersten Arbeitsblatt beibehalten und die Datei wieder importieren.
 - Viele Bilder im Admin-Bereich: Die Bildbibliothek lädt nur eine Seite gleichzeitig und kann über die Suche gefiltert werden.
 - Bilder fehlen nach Redeploy: sicherstellen, dass die Volumes nicht gelöscht wurden.
-- Legacy-Daten fehlen: nur beim allerersten Start mit leerer Datenbank wird automatisch importiert.
+- Optionaler Erstimport greift nur beim allerersten Start mit leerer Datenbank und nur wenn eine `db.json` vorhanden ist.
 
 ## Hinweise
 
 - Das Fallback-Passwort ist nur für die erste Inbetriebnahme gedacht und darf in Produktion nicht so bleiben.
-- Der Altbestand im Ordner old pascal bleibt als Referenz im Repository, wird aber nicht mehr als laufende Anwendung verwendet.

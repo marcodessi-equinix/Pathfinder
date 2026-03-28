@@ -54,7 +54,6 @@ dotenv.config({ path: path.join(projectDir, '.env') })
 const legacyDatabaseCandidates = [
   path.join(backendDir, 'legacy', 'db.json'),
   path.join(projectDir, 'db.json'),
-  path.join(projectDir, 'old pascal', 'db.json'),
 ]
 const port = Number(process.env.PORT ?? 3000)
 const adminPassword = process.env.ADMIN_PASSWORD ?? 'change-me'

@@ -2,13 +2,15 @@ FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 
-COPY backend/package*.json ./
+COPY package.json package-lock.json ./
+COPY backend/package.json ./backend/package.json
+COPY frontend/package.json ./frontend/package.json
 RUN npm ci
 
-COPY backend/tsconfig.json ./tsconfig.json
-COPY backend/src ./src
+COPY backend/tsconfig.json ./backend/tsconfig.json
+COPY backend/src ./backend/src
 
-RUN npm run build
+RUN npm run build -w backend
 
 FROM node:24-bookworm-slim AS runtime
 
@@ -16,10 +18,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-COPY backend/package*.json ./
+COPY package.json package-lock.json ./
+COPY backend/package.json ./backend/package.json
+COPY frontend/package.json ./frontend/package.json
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY --from=build /app/dist ./dist
+COPY --from=build /app/backend/dist ./dist
 COPY backend/FR2_Grundriss ./FR2_Grundriss
 
 RUN mkdir -p /app/data /app/uploads

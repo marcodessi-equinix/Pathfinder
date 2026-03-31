@@ -10,7 +10,7 @@ export type Room = {
 export type FeedbackEntry = {
   id: number
   usid: string
-  rating: 'up' | 'down'
+  rating: number
   comment: string
   timestamp: string
 }
@@ -43,4 +43,13 @@ export type UploadedImagePage = {
   page: number
   pageSize: number
   totalPages: number
+}
+
+export type ChartData = {
+  searchesPerDay: Array<{ day: string; count: number }>
+  feedbackPerDay: Array<{ day: string; count: number }>
+  ratingDistribution: Array<{ rating: number; count: number }>
+  topRooms: Array<{ usid: string; searches: number; building: string; room: string }>
+  searchesByBuilding: Array<{ building: string; count: number }>
+  avgRatingPerDay: Array<{ day: string; avg: number }>
 }

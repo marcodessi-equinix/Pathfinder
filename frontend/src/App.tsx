@@ -4,6 +4,7 @@ import {
   deleteRoom,
   getAdminSession,
   getBuildingTemplates,
+  getChartData,
   getDownloadUrl,
   getFeedback,
   getImages,
@@ -24,7 +25,11 @@ import {
   uploadImages,
 } from './api'
 import './App.css'
-import type { BuildingTemplate, FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
+import type { BuildingTemplate, ChartData, FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
+import {
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+} from 'recharts'
 
 type WakeLockSentinelLike = {
   release: () => Promise<void>
@@ -61,6 +66,29 @@ const emptyRoom: RoomForm = {
 
 const roomWorkbookHeaders = ['USID', 'Building', 'Level', 'Room', 'Door', 'Image'] as const
 const imagePageSize = 24
+const chartTooltipContentStyle = {
+  background: 'rgba(255, 255, 255, 0.98)',
+  border: '1px solid rgba(148, 163, 184, 0.35)',
+  borderRadius: 12,
+  boxShadow: '0 18px 32px rgba(15, 23, 42, 0.14)',
+}
+const chartTooltipLabelStyle = {
+  color: '#0f172a',
+  fontWeight: 700,
+}
+const chartTooltipItemStyle = {
+  color: '#334155',
+}
+const chartHoverCursorLine = {
+  stroke: 'rgba(37, 99, 235, 0.35)',
+  strokeWidth: 1,
+}
+const chartHoverCursorFill = {
+  fill: 'rgba(37, 99, 235, 0.08)',
+}
+const adminThemeStorageKey = 'pathfinder-admin-theme'
+
+type AdminTheme = 'dark' | 'light'
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
@@ -190,9 +218,10 @@ function KioskApp() {
   const [buildingTemplates, setBuildingTemplates] = useState<BuildingTemplate[]>([])
   const [error, setError] = useState('')
   const [secondsLeft, setSecondsLeft] = useState(45)
-  const [rating, setRating] = useState<'up' | 'down' | null>(null)
+  const [rating, setRating] = useState<number | null>(null)
   const [comment, setComment] = useState('')
   const [feedbackSent, setFeedbackSent] = useState(false)
+  const [commentSent, setCommentSent] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const resetTimeoutRef = useRef<number | null>(null)
 
@@ -267,6 +296,7 @@ function KioskApp() {
           setRating(null)
           setComment('')
           setFeedbackSent(false)
+          setCommentSent(false)
           return 45
         }
 
@@ -315,6 +345,7 @@ function KioskApp() {
       setRating(null)
       setComment('')
       setFeedbackSent(false)
+      setCommentSent(false)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'No USID found')
     } finally {
@@ -358,19 +389,23 @@ function KioskApp() {
     updateInput('')
   }
 
-  async function handleSendFeedback() {
-    if (!selectedRoom || !rating) {
-      window.alert('Please select thumbs up or down')
-      return
-    }
-
-    if (comment.trim().length > 0 && comment.trim().length < 10) {
-      window.alert('Comment must be at least 10 characters long')
-      return
-    }
-
-    await sendFeedback(selectedRoom.usid, rating, comment.trim())
+  async function handleSmileyClick(value: number) {
+    if (!selectedRoom || feedbackSent) return
+    setRating(value)
     setFeedbackSent(true)
+    setSecondsLeft((current) => current + 15)
+    await sendFeedback(selectedRoom.usid, value, '')
+  }
+
+  async function handleSendComment() {
+    if (!selectedRoom || !rating || commentSent) return
+    if (comment.trim().length > 0 && comment.trim().length < 10) {
+      setError('Comment must be at least 10 characters long')
+      return
+    }
+    if (comment.trim().length === 0) return
+    await sendFeedback(selectedRoom.usid, rating, comment.trim())
+    setCommentSent(true)
   }
 
   function resetView() {
@@ -380,6 +415,7 @@ function KioskApp() {
     setRating(null)
     setComment('')
     setFeedbackSent(false)
+    setCommentSent(false)
     setError('')
     setSecondsLeft(45)
   }
@@ -392,6 +428,7 @@ function KioskApp() {
     setRating(null)
     setComment('')
     setFeedbackSent(false)
+    setCommentSent(false)
   }
 
   return (
@@ -538,39 +575,43 @@ function KioskApp() {
 
             {selectedRoom ? (
               <>
-                <div className="feedback-row">
-                  <button
-                    className={`feedback-button ${rating === 'up' ? 'is-positive' : ''}`}
-                    onClick={() => {
-                      setRating('up')
-                      setSecondsLeft((current) => current + (rating ? 0 : 15))
-                    }}
-                  >
-                    👍
-                  </button>
-                  <button
-                    className={`feedback-button ${rating === 'down' ? 'is-negative' : ''}`}
-                    onClick={() => {
-                      setRating('down')
-                      setSecondsLeft((current) => current + (rating ? 0 : 15))
-                    }}
-                  >
-                    👎
-                  </button>
-                  <input
-                    className="feedback-input"
-                    type="text"
-                    value={comment}
-                    onChange={(event) => setComment(event.target.value)}
-                    placeholder="Optional comment (min 10 chars)"
-                    disabled={feedbackSent}
-                  />
-                  <button className="primary-button compact" disabled={feedbackSent} onClick={() => void handleSendFeedback()}>
-                    Send
-                  </button>
+                <div className="feedback-smileys">
+                  {[
+                    { value: 1, emoji: '😡', label: 'Very bad' },
+                    { value: 2, emoji: '😕', label: 'Bad' },
+                    { value: 3, emoji: '😐', label: 'Okay' },
+                    { value: 4, emoji: '🙂', label: 'Good' },
+                    { value: 5, emoji: '😍', label: 'Great' },
+                  ].map((item) => (
+                    <button
+                      key={item.value}
+                      className={`smiley-button ${rating === item.value ? 'is-selected' : ''}`}
+                      onClick={() => void handleSmileyClick(item.value)}
+                      disabled={feedbackSent}
+                      aria-label={item.label}
+                    >
+                      {item.emoji}
+                    </button>
+                  ))}
                 </div>
 
-                {feedbackSent ? <p className="thank-you">Thank you!</p> : null}
+                {feedbackSent && !commentSent ? (
+                  <div className="feedback-comment-row">
+                    <p className="thank-you">Thank you!</p>
+                    <input
+                      className="feedback-input"
+                      type="text"
+                      value={comment}
+                      onChange={(event) => setComment(event.target.value)}
+                      placeholder="Optional comment (min 10 chars)"
+                    />
+                    <button className="primary-button compact" onClick={() => void handleSendComment()} disabled={comment.trim().length === 0}>
+                      Send
+                    </button>
+                  </div>
+                ) : null}
+
+                {commentSent ? <p className="thank-you">Thank you for your comment!</p> : null}
               </>
             ) : null}
           </div>
@@ -581,6 +622,13 @@ function KioskApp() {
 }
 
 function AdminApp() {
+  const [adminTheme, setAdminTheme] = useState<AdminTheme>(() => {
+    if (typeof window === 'undefined') {
+      return 'dark'
+    }
+
+    return window.localStorage.getItem(adminThemeStorageKey) === 'light' ? 'light' : 'dark'
+  })
   const [authenticated, setAuthenticated] = useState(false)
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState('')
@@ -595,10 +643,41 @@ function AdminApp() {
   const [imageQuery, setImageQuery] = useState('')
   const [imagePage, setImagePage] = useState(1)
   const [imageRenameDrafts, setImageRenameDrafts] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!statusNotice) return
+    const delay = statusNotice.tone === 'error' ? 6000 : 4000
+    const timer = setTimeout(() => setStatusNotice(null), delay)
+    return () => clearTimeout(timer)
+  }, [statusNotice])
   const [templateRenameDrafts, setTemplateRenameDrafts] = useState<Record<string, string>>({})
   const [isUploadingImages, setIsUploadingImages] = useState(false)
   const [isUploadingTemplates, setIsUploadingTemplates] = useState(false)
   const [roomView, setRoomView] = useState<'grid' | 'table'>('table')
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'rooms' | 'import' | 'templates' | 'images' | 'reports'>('dashboard')
+  const [chartData, setChartData] = useState<ChartData | null>(null)
+  const [modal, setModal] = useState<{ title: string; message: string; onConfirm?: () => void } | null>(null)
+  const modalRejectRef = useRef<(() => void) | null>(null)
+
+  function showConfirmModal(title: string, message: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      modalRejectRef.current = () => { setModal(null); resolve(false) }
+      setModal({
+        title,
+        message,
+        onConfirm: () => { modalRejectRef.current = null; setModal(null); resolve(true) },
+      })
+    })
+  }
+
+  function dismissModal() {
+    if (modalRejectRef.current) {
+      modalRejectRef.current()
+      modalRejectRef.current = null
+    } else {
+      setModal(null)
+    }
+  }
 
   useEffect(() => {
     document.title = 'PATHFINDER Admin'
@@ -613,23 +692,34 @@ function AdminApp() {
 
   useEffect(() => {
     document.body.classList.add('admin-mode')
+    document.body.dataset.adminTheme = adminTheme
 
     return () => {
       document.body.classList.remove('admin-mode')
+      delete document.body.dataset.adminTheme
     }
-  }, [])
+  }, [adminTheme])
+
+  useEffect(() => {
+    window.localStorage.setItem(adminThemeStorageKey, adminTheme)
+  }, [adminTheme])
+
+  function toggleAdminTheme() {
+    setAdminTheme((current) => (current === 'dark' ? 'light' : 'dark'))
+  }
 
   useEffect(() => {
     if (!authenticated) {
       return
     }
 
-    void Promise.all([getRooms(), getFeedback(), getReport(), getBuildingTemplates()])
-      .then(([roomsResponse, feedbackResponse, reportResponse, templateResponse]) => {
+    void Promise.all([getRooms(), getFeedback(), getReport(), getBuildingTemplates(), getChartData()])
+      .then(([roomsResponse, feedbackResponse, reportResponse, templateResponse, charts]) => {
         setRooms(roomsResponse)
         setFeedback(feedbackResponse)
         setReport(reportResponse)
         setBuildingTemplates(templateResponse)
+        setChartData(charts)
         setTemplateRenameDrafts((current) => {
           const nextDrafts = { ...current }
           for (const template of templateResponse) {
@@ -714,11 +804,8 @@ function AdminApp() {
       .map((entry) => entry.template)
   }, [buildingTemplates, roomForm.building])
 
-  const recentFeedback = feedback.slice(0, 5)
-  const recentReport = report.slice(0, 5)
   const totalSearches = report.reduce((sum, entry) => sum + entry.searches, 0)
-  const totalPositive = feedback.filter((entry) => entry.rating === 'up').length
-  const totalNegative = feedback.filter((entry) => entry.rating === 'down').length
+  const averageRating = feedback.length > 0 ? (feedback.reduce((sum, entry) => sum + entry.rating, 0) / feedback.length).toFixed(1) : '–'
   const visibleTemplateCount = buildingTemplates.filter((template) => template.showOnHome).length
   const hiddenTemplateCount = buildingTemplates.length - visibleTemplateCount
   const topSearch = report.reduce<ReportEntry | null>((currentTop, entry) => {
@@ -813,7 +900,8 @@ function AdminApp() {
   }
 
   async function handleDeleteRoom(usid: string) {
-    if (!window.confirm(`Delete room ${usid}? This cannot be undone.`)) {
+    const confirmed = await showConfirmModal('Delete Room', `Delete room ${usid}? This cannot be undone.`)
+    if (!confirmed) {
       return
     }
 
@@ -837,7 +925,8 @@ function AdminApp() {
         return
       }
 
-      const shouldImport = window.confirm(
+      const shouldImport = await showConfirmModal(
+        'Import Rooms',
         `Import ${formatRelativeCount(payload.length, 'room', 'rooms')} from ${file.name}? This will replace the current room list.`,
       )
 
@@ -964,7 +1053,8 @@ function AdminApp() {
   }
 
   async function handleDeleteBuildingTemplate(template: BuildingTemplate) {
-    if (!window.confirm(`Delete building template ${template.building}? This cannot be undone.`)) {
+    const confirmed = await showConfirmModal('Delete Template', `Delete building template ${template.building}? This cannot be undone.`)
+    if (!confirmed) {
       return
     }
 
@@ -1021,12 +1111,13 @@ function AdminApp() {
       building: current.building || template.building,
       image: template.path,
     }))
+    setActiveTab('rooms')
     setStatusNotice({ tone: 'info', message: `Building template ${template.building} selected.` })
   }
 
   if (!authenticated) {
     return (
-      <main className="admin-login-shell">
+      <main className="admin-login-shell" data-admin-theme={adminTheme}>
         <section className="admin-login-stage">
           <aside className="admin-login-showcase">
             <span className="admin-eyebrow">PATHFINDER // CONTROL</span>
@@ -1054,8 +1145,8 @@ function AdminApp() {
             <div className="admin-login-pulse-card" aria-hidden="true">
               <span className="pulse-dot" />
               <div>
-                <strong>Dark mode operations console</strong>
-                <span>Built for fast scanning, clear hierarchy and high-signal actions.</span>
+                <strong>Operations console with theme toggle</strong>
+                <span>Dark by default, with an optional light view when you want it.</span>
               </div>
             </div>
           </aside>
@@ -1085,6 +1176,10 @@ function AdminApp() {
               Enter command center
             </button>
 
+            <button className="secondary-button theme-toggle" onClick={toggleAdminTheme}>
+              Theme: {adminTheme === 'dark' ? 'Dark' : 'Light'}
+            </button>
+
             <div className="admin-login-meta">
               <span>Protected admin route</span>
               <span>Room, template and report access</span>
@@ -1097,354 +1192,404 @@ function AdminApp() {
     )
   }
 
+  const adminTabs = [
+    { key: 'dashboard' as const, label: 'Dashboard', icon: '▣' },
+    { key: 'rooms' as const, label: 'Rooms', icon: '⌂' },
+    { key: 'import' as const, label: 'Import', icon: '⇪' },
+    { key: 'templates' as const, label: 'Templates', icon: '⊡' },
+    { key: 'images' as const, label: 'Images', icon: '▨' },
+    { key: 'reports' as const, label: 'Reports', icon: '⊟' },
+  ]
+
   return (
-    <main className="admin-shell">
-      <section className="admin-hero">
-        <header className="admin-header admin-card emphasis-card">
-          <div className="admin-header-copy">
-            <span className="admin-eyebrow">Operations Dashboard</span>
-            <h1>PATHFINDER Command Center</h1>
-            <p>Manage rooms, imports, images and operational feedback from one dark-mode control surface.</p>
+    <main className="admin-shell" data-admin-theme={adminTheme}>
+      <nav className="admin-sidebar">
+        <div className="sidebar-brand">
+          <img src="/admin-monitor-logo.svg" alt="Pathfinder monitor logo" className="sidebar-brand-logo" />
+          <div className="sidebar-brand-text">
+            <strong>PATHFINDER</strong>
+            <span>Admin Console</span>
           </div>
-
-          <div className="admin-hero-metrics" aria-label="Operational highlights">
-            <article className="admin-hero-metric">
-              <span>Visible templates</span>
-              <strong>{visibleTemplateCount}</strong>
-            </article>
-            <article className="admin-hero-metric">
-              <span>Hidden templates</span>
-              <strong>{hiddenTemplateCount}</strong>
-            </article>
-            <article className="admin-hero-metric">
-              <span>Loaded images</span>
-              <strong>{imagePageData.total}</strong>
-            </article>
-          </div>
-        </header>
-
-        <aside className="admin-side-panel admin-card">
-          <span className="admin-eyebrow">Session</span>
-          <strong>Admin online</strong>
-          <p>{lastActivity ? `Latest activity ${formatDate(lastActivity)}` : 'No recent activity recorded yet.'}</p>
-          <button className="secondary-button" onClick={() => void handleLogout()}>
-            Logout
-          </button>
-        </aside>
-      </section>
-
-      {statusNotice ? <p className={`status-message admin-status-banner is-${statusNotice.tone}`}>{statusNotice.message}</p> : null}
-
-      <section className="stats-grid">
-        <article className="stat-card emphasis-card">
-          <span className="stat-label">Rooms</span>
-          <strong className="stat-value">{rooms.length}</strong>
-          <span className="stat-note">{formatRelativeCount(filteredRooms.length, 'result', 'results')} for the current filter</span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">Searches</span>
-          <strong className="stat-value">{totalSearches}</strong>
-          <span className="stat-note">{topSearch ? `Top USID ${topSearch.usid} with ${topSearch.searches}` : 'No searches yet'}</span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">Feedback</span>
-          <strong className="stat-value">{feedback.length}</strong>
-          <span className="stat-note">{totalPositive} up, {totalNegative} down</span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">Latest Activity</span>
-          <strong className="stat-value small">{lastActivity ? formatDate(lastActivity) : 'No activity'}</strong>
-          <span className="stat-note">Exports still contain the full dataset</span>
-        </article>
-      </section>
-
-      <section className="admin-grid">
-        <article className="admin-card emphasis-card">
-          <h2>Room Editor</h2>
-          <p className="muted-text">Update a room directly or use a saved building template before falling back to the image library.</p>
-          <div className="form-grid">
-            <input placeholder="USID" value={roomForm.usid} onChange={(event) => setRoomForm({ ...roomForm, usid: event.target.value.replace(/\D/g, '').slice(0, 6) })} />
-            <input placeholder="Building" value={roomForm.building} onChange={(event) => setRoomForm({ ...roomForm, building: event.target.value })} />
-            <input placeholder="Level" value={roomForm.level} onChange={(event) => setRoomForm({ ...roomForm, level: event.target.value })} />
-            <input placeholder="Room" value={roomForm.room} onChange={(event) => setRoomForm({ ...roomForm, room: event.target.value })} />
-            <input placeholder="Door" value={roomForm.door} onChange={(event) => setRoomForm({ ...roomForm, door: event.target.value })} />
-            <input placeholder="Image path" value={roomForm.image} onChange={(event) => setRoomForm({ ...roomForm, image: event.target.value })} />
-          </div>
-          <div className="template-panel">
-            <div className="template-panel-head">
-              <div>
-                <h3>Building Templates</h3>
-                <p className="muted-text">
-                  {roomForm.building
-                    ? matchingBuildingTemplates.length > 0
-                      ? `Showing template matches for ${roomForm.building}.`
-                      : `No saved template matches ${roomForm.building} yet.`
-                    : 'Choose one of the saved floor plan templates.'}
-                </p>
-              </div>
-              <div className="template-panel-actions">
-                <span className="template-count">{matchingBuildingTemplates.length} available</span>
-                <label className="upload-button compact">
-                  {isUploadingTemplates ? 'Uploading...' : 'Upload templates'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    hidden
-                    onChange={(event) => {
-                      void handleTemplateUpload(event.target.files)
-                      event.currentTarget.value = ''
-                    }}
-                  />
-                </label>
-              </div>
-            </div>
-
-            {matchingBuildingTemplates.length > 0 ? (
-              <div className="template-library-grid">
-                {matchingBuildingTemplates.map((template) => (
-                  <article
-                    key={template.fileName}
-                    className={`template-card ${roomForm.image === template.path ? 'is-selected' : ''}`}
-                  >
-                    <img src={resolveAssetUrl(template.path)} alt={template.building} />
-                    <div className="template-card-meta">
-                      <strong>{template.building}</strong>
-                      <span>{template.fileName}</span>
-                    </div>
-                    <label className="template-visibility-toggle">
-                      <input
-                        type="checkbox"
-                        checked={template.showOnHome}
-                        onChange={(event) => {
-                          void handleToggleBuildingTemplateVisibility(template, event.target.checked)
-                        }}
-                      />
-                      Show on start screen
-                    </label>
-                    <input
-                      value={templateRenameDrafts[template.fileName] ?? template.name}
-                      onChange={(event) => {
-                        const nextValue = event.target.value
-                        setTemplateRenameDrafts((current) => ({ ...current, [template.fileName]: nextValue }))
-                      }}
-                      placeholder="Rename template"
-                    />
-                    <div className="button-row template-card-actions">
-                      <button
-                        className="secondary-button compact"
-                        onClick={() => handleUseBuildingTemplate(template)}
-                      >
-                        Use template
-                      </button>
-                      <button className="primary-button compact" onClick={() => void handleRenameBuildingTemplate(template)}>
-                        Rename
-                      </button>
-                      <button className="danger-button compact" onClick={() => void handleDeleteBuildingTemplate(template)}>
-                        Delete
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="muted-text">Upload a new template here or add a building name to narrow existing matches.</p>
-            )}
-          </div>
-          {roomForm.image ? (
-            <div className="selected-image-panel">
-              <img src={resolveAssetUrl(roomForm.image)} alt="Selected room" />
-              <span>{roomForm.image}</span>
-            </div>
-          ) : (
-            <p className="muted-text">Select an image from the library below or paste a path manually.</p>
-          )}
-          <div className="button-row">
-            <button className="primary-button compact" onClick={() => void handleSaveRoom()}>
-              Save room
-            </button>
-            <button className="secondary-button compact" onClick={() => setRoomForm(emptyRoom)}>
-              Reset form
-            </button>
-          </div>
-        </article>
-
-        <article className="admin-card">
-          <div className="section-head">
-            <h2>Excel Import</h2>
-            <button className="secondary-button compact" onClick={() => void handleExportTemplate()}>
-              Export Excel Template
-            </button>
-          </div>
-          <p className="muted-text">Export the template, fill it in and upload the Excel file here.</p>
-          <label
-            className="drop-zone"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault()
-              const file = event.dataTransfer.files?.[0]
-              if (file) {
-                void handleImportFile(file)
-              }
-            }}
-          >
-            Drag and drop your Excel file here
-            <span className="drop-zone-note">Required columns: USID, Building, Level, Room, Door, Image</span>
-            <input
-              type="file"
-              accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-              hidden
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) {
-                  void handleImportFile(file)
-                }
-                event.currentTarget.value = ''
-              }}
-            />
-          </label>
-          <p className="muted-text">The import replaces the current room list.</p>
-        </article>
-      </section>
-
-      <section className="admin-card">
-        <div className="section-head">
-          <div>
-            <h2>Image Library</h2>
-            <p className="muted-text">Upload many images at once, rename them later and only load one page of results at a time.</p>
-          </div>
-          <label className="upload-button">
-            {isUploadingImages ? 'Uploading...' : 'Upload images'}
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              onChange={(event) => {
-                void handleUpload(event.target.files)
-                event.currentTarget.value = ''
-              }}
-            />
-          </label>
         </div>
 
-        <div className="toolbar-row">
-          <input
-            className="search-filter"
-            placeholder="Search images by name"
-            value={imageQuery}
-            onChange={(event) => {
-              setImageQuery(event.target.value)
-              setImagePage(1)
-            }}
-          />
-          <span className="muted-text">{imagePageData.total} images total</span>
-        </div>
-
-        {imagePageData.items.length === 0 ? <p className="muted-text">No images found for the current filter.</p> : null}
-
-        <div className="image-library-grid">
-          {imagePageData.items.map((image) => (
-            <article key={image.fileName} className="image-library-card">
-              <img src={resolveAssetUrl(image.path)} alt={image.name} />
-              <div className="image-library-meta">
-                <strong>{image.name}</strong>
-                <span>{image.fileName}</span>
-              </div>
-              <input
-                value={imageRenameDrafts[image.fileName] ?? image.name}
-                onChange={(event) => {
-                  const nextValue = event.target.value
-                  setImageRenameDrafts((current) => ({ ...current, [image.fileName]: nextValue }))
-                }}
-                placeholder="Rename image"
-              />
-              <div className="button-row">
-                <button className="secondary-button compact" onClick={() => setRoomForm((current) => ({ ...current, image: image.path }))}>
-                  Use for room
-                </button>
-                <button className="primary-button compact" onClick={() => void handleRenameImage(image)}>
-                  Rename
-                </button>
-              </div>
-            </article>
+        <div className="sidebar-nav">
+          {adminTabs.map((tab) => (
+            <button
+              key={tab.key}
+              className={`sidebar-nav-item ${activeTab === tab.key ? 'is-active' : ''}`}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              <span className="sidebar-nav-icon">{tab.icon}</span>
+              <span>{tab.label}</span>
+            </button>
           ))}
         </div>
 
-        <div className="pagination-row">
-          <button className="secondary-button compact" disabled={imagePageData.page <= 1} onClick={() => setImagePage((current) => Math.max(1, current - 1))}>
-            Previous
-          </button>
-          <span>
-            Page {imagePageData.page} of {imagePageData.totalPages}
-          </span>
-          <button
-            className="secondary-button compact"
-            disabled={imagePageData.page >= imagePageData.totalPages}
-            onClick={() => setImagePage((current) => Math.min(imagePageData.totalPages, current + 1))}
-          >
-            Next
+        <div className="sidebar-footer">
+          <div className="sidebar-session">
+            <span className="sidebar-session-dot" />
+            <span>Admin online</span>
+          </div>
+          <button className="sidebar-logout" onClick={() => void handleLogout()}>
+            Logout
           </button>
         </div>
-      </section>
+      </nav>
 
-      <section className="admin-card">
-        <div className="section-head">
-          <div>
-            <h2>Rooms</h2>
-            <p className="muted-text">Switch between a compact table and visual card grid depending on the task.</p>
+      <div className="admin-content">
+        <header className="admin-topbar">
+          <div className="topbar-left">
+            <h1 className="topbar-title">{adminTabs.find((t) => t.key === activeTab)?.label}</h1>
+            <span className="topbar-subtitle">
+              {activeTab === 'dashboard' && 'Overview of system health and key metrics'}
+              {activeTab === 'rooms' && 'Create, edit and manage room records'}
+              {activeTab === 'import' && 'Bulk import rooms from Excel files'}
+              {activeTab === 'templates' && 'Floor plan templates for building navigation'}
+              {activeTab === 'images' && 'Upload and manage the media library'}
+              {activeTab === 'reports' && 'Feedback and search analytics'}
+            </span>
           </div>
-          <div className="view-controls">
-            <input
-              className="search-filter"
-              placeholder="Search by USID, building or level"
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-            />
-            <div className="toggle-group" role="group" aria-label="Room view toggle">
-              <button
-                className={`secondary-button compact ${roomView === 'table' ? 'is-active' : ''}`}
-                onClick={() => setRoomView('table')}
-              >
-                Table
-              </button>
-              <button
-                className={`secondary-button compact ${roomView === 'grid' ? 'is-active' : ''}`}
-                onClick={() => setRoomView('grid')}
-              >
-                Grid
-              </button>
-            </div>
+          <div className="topbar-right">
+            <button className="secondary-button compact theme-toggle" onClick={toggleAdminTheme}>
+              Theme: {adminTheme === 'dark' ? 'Dark' : 'Light'}
+            </button>
+            {lastActivity ? <span className="topbar-activity">Last activity {formatDate(lastActivity)}</span> : null}
           </div>
-        </div>
+        </header>
 
-        {filteredRooms.length === 0 ? <p className="muted-text empty-state">No rooms match the current filter.</p> : null}
+        {statusNotice ? <p className={`status-message admin-status-banner is-${statusNotice.tone}`}>{statusNotice.message}</p> : null}
 
-        {roomView === 'table' ? (
-          <div className="table-wrap rooms-table-wrap">
-            <table className="rooms-table">
-              <thead>
-                <tr>
-                  <th>USID</th>
-                  <th>Building</th>
-                  <th>Level</th>
-                  <th>Room</th>
-                  <th>Door</th>
-                  <th>Image</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRooms.map((room) => (
-                  <tr key={room.usid}>
-                    <td>{room.usid}</td>
-                    <td>{room.building}</td>
-                    <td>{room.level}</td>
-                    <td>{room.room}</td>
-                    <td>{room.door}</td>
-                    <td>{room.image ? 'Available' : 'Missing'}</td>
-                    <td>
-                      <div className="table-actions">
+        {activeTab === 'dashboard' && (
+          <div className="admin-tab-panel">
+            <section className="stats-grid">
+              <article className="stat-card stat-card--rooms">
+                <div className="stat-icon-ring">⌂</div>
+                <div className="stat-body">
+                  <span className="stat-label">Rooms</span>
+                  <strong className="stat-value">{rooms.length}</strong>
+                  <span className="stat-note">{formatRelativeCount(filteredRooms.length, 'result', 'results')} for the current filter</span>
+                </div>
+              </article>
+              <article className="stat-card stat-card--searches">
+                <div className="stat-icon-ring">⊘</div>
+                <div className="stat-body">
+                  <span className="stat-label">Searches</span>
+                  <strong className="stat-value">{totalSearches}</strong>
+                  <span className="stat-note">{topSearch ? `Top USID ${topSearch.usid} with ${topSearch.searches}` : 'No searches yet'}</span>
+                </div>
+              </article>
+              <article className="stat-card stat-card--feedback">
+                <div className="stat-icon-ring">♡</div>
+                <div className="stat-body">
+                  <span className="stat-label">Feedback</span>
+                  <strong className="stat-value">{feedback.length}</strong>
+                  <span className="stat-note">Avg {averageRating} / 5</span>
+                </div>
+              </article>
+              <article className="stat-card stat-card--templates">
+                <div className="stat-icon-ring">⊡</div>
+                <div className="stat-body">
+                  <span className="stat-label">Templates</span>
+                  <strong className="stat-value">{buildingTemplates.length}</strong>
+                  <span className="stat-note">{visibleTemplateCount} visible · {hiddenTemplateCount} hidden</span>
+                </div>
+              </article>
+            </section>
+
+            {chartData && (
+              <section className="dashboard-charts">
+                <article className="admin-card chart-card">
+                  <h2>Searches (30d)</h2>
+                  <div className="chart-wrap">
+                    <ResponsiveContainer width="100%" height={200}>
+                      <AreaChart data={chartData.searchesPerDay}>
+                        <defs>
+                          <linearGradient id="gradSearch" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
+                        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                        <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorLine} />
+                        <Area type="monotone" dataKey="count" stroke="#6366f1" fill="url(#gradSearch)" strokeWidth={2} name="Searches" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </article>
+
+                <article className="admin-card chart-card">
+                  <h2>Avg. Rating (30d)</h2>
+                  <div className="chart-wrap">
+                    <ResponsiveContainer width="100%" height={200}>
+                      <AreaChart data={chartData.avgRatingPerDay}>
+                        <defs>
+                          <linearGradient id="gradRating" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
+                        <YAxis domain={[0, 5]} tick={{ fontSize: 11 }} />
+                        <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorLine} />
+                        <Area type="monotone" dataKey="avg" stroke="#f59e0b" fill="url(#gradRating)" strokeWidth={2} name="Avg Rating" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </article>
+
+                <article className="admin-card chart-card">
+                  <h2>Ratings</h2>
+                  <div className="chart-wrap">
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={chartData.ratingDistribution}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <XAxis dataKey="rating" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${['😡','😕','😐','🙂','😍'][v - 1]} ${v}`} />
+                        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                        <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorFill} />
+                        <Bar dataKey="count" name="Feedback" radius={[6, 6, 0, 0]}>
+                          {chartData.ratingDistribution.map((entry) => (
+                            <Cell key={entry.rating} fill={['#ef4444','#f97316','#eab308','#22c55e','#10b981'][entry.rating - 1]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </article>
+
+                <article className="admin-card chart-card">
+                  <h2>By Building</h2>
+                  <div className="chart-wrap">
+                    <ResponsiveContainer width="100%" height={200}>
+                      <PieChart>
+                        <Pie
+                          data={chartData.searchesByBuilding}
+                          dataKey="count"
+                          nameKey="building"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={70}
+                          innerRadius={35}
+                          label={(props) => {
+                            const building = typeof props.payload?.building === 'string' ? props.payload.building : ''
+                            const percent = typeof props.percent === 'number' ? props.percent : 0
+                            return `${building} ${(percent * 100).toFixed(0)}%`
+                          }}
+                        >
+                          {chartData.searchesByBuilding.map((_entry, i) => (
+                            <Cell key={i} fill={['#6366f1','#8b5cf6','#a78bfa','#c4b5fd','#ddd6fe','#7c3aed','#4f46e5'][i % 7]} />
+                          ))}
+                        </Pie>
+                        <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} />
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </article>
+
+                <article className="admin-card chart-card">
+                  <h2>Top Rooms</h2>
+                  <div className="chart-wrap">
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={chartData.topRooms} layout="vertical" margin={{ left: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+                        <YAxis type="category" dataKey="usid" tick={{ fontSize: 11 }} width={70} />
+                        <Tooltip
+                          contentStyle={chartTooltipContentStyle}
+                          labelStyle={chartTooltipLabelStyle}
+                          itemStyle={chartTooltipItemStyle}
+                          cursor={chartHoverCursorFill}
+                          formatter={(value, _name, props) => {
+                            const searches = typeof value === 'number' ? value : Number(value ?? 0)
+                            const building = typeof props.payload?.building === 'string' ? props.payload.building : 'Unknown'
+                            const room = typeof props.payload?.room === 'string' ? props.payload.room : '?'
+                            return [`${searches} searches`, `${building} / ${room}`]
+                          }}
+                        />
+                        <Bar dataKey="searches" name="Searches" radius={[0, 6, 6, 0]}>
+                          {chartData.topRooms.map((_entry, i) => (
+                            <Cell key={i} fill={i === 0 ? '#6366f1' : i < 3 ? '#8b5cf6' : '#a78bfa'} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </article>
+
+                <article className="admin-card chart-card">
+                  <h2>Feedback (30d)</h2>
+                  <div className="chart-wrap">
+                    <ResponsiveContainer width="100%" height={200}>
+                      <AreaChart data={chartData.feedbackPerDay}>
+                        <defs>
+                          <linearGradient id="gradFeedback" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#ec4899" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#ec4899" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
+                        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                        <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorLine} />
+                        <Area type="monotone" dataKey="count" stroke="#ec4899" fill="url(#gradFeedback)" strokeWidth={2} name="Feedback" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </article>
+              </section>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'rooms' && (
+          <div className="admin-tab-panel">
+            <section className="admin-grid">
+              <article className="admin-card emphasis-card">
+                <h2>Room Editor</h2>
+                <p className="muted-text">Update a room directly or use a saved building template before falling back to the image library.</p>
+                <div className="form-grid">
+                  <label className="form-field">
+                    <span>USID</span>
+                    <input placeholder="e.g. 100234" value={roomForm.usid} onChange={(event) => setRoomForm({ ...roomForm, usid: event.target.value.replace(/\D/g, '').slice(0, 6) })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Building</span>
+                    <input placeholder="e.g. FR2" value={roomForm.building} onChange={(event) => setRoomForm({ ...roomForm, building: event.target.value })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Level</span>
+                    <input placeholder="e.g. L1" value={roomForm.level} onChange={(event) => setRoomForm({ ...roomForm, level: event.target.value })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Room</span>
+                    <input placeholder="e.g. R102" value={roomForm.room} onChange={(event) => setRoomForm({ ...roomForm, room: event.target.value })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Door</span>
+                    <input placeholder="e.g. D1" value={roomForm.door} onChange={(event) => setRoomForm({ ...roomForm, door: event.target.value })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Image path</span>
+                    <input placeholder="Select or enter path" value={roomForm.image} onChange={(event) => setRoomForm({ ...roomForm, image: event.target.value })} />
+                  </label>
+                </div>
+
+                <div className="button-row">
+                  <button className="primary-button compact" onClick={() => void handleSaveRoom()}>
+                    Save room
+                  </button>
+                  <button className="secondary-button compact" onClick={() => setRoomForm(emptyRoom)}>
+                    Reset form
+                  </button>
+                </div>
+              </article>
+
+              <article className="admin-card room-preview-card">
+                <h2>Preview</h2>
+                {roomForm.image ? (
+                  <div className="room-preview-panel">
+                    <img src={resolveAssetUrl(roomForm.image)} alt="Selected" />
+                    <div className="room-preview-footer">
+                      <span>{roomForm.image}</span>
+                      <button className="secondary-button compact" onClick={() => setRoomForm((c) => ({ ...c, image: '', building: '' }))}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="room-preview-empty">
+                    <span className="room-preview-empty-icon">▨</span>
+                    <p>No image selected</p>
+                    <span className="muted-text">Use a template or pick an image from the library.</span>
+                  </div>
+                )}
+              </article>
+            </section>
+
+            <section className="admin-card">
+              <div className="section-head">
+                <div>
+                  <h2>Rooms</h2>
+                  <p className="muted-text">Switch between a compact table and visual card grid.</p>
+                </div>
+                <div className="view-controls">
+                  <input
+                    className="search-filter"
+                    placeholder="Search by USID, building or level"
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                  />
+                  <div className="toggle-group" role="group" aria-label="Room view toggle">
+                    <button
+                      className={`secondary-button compact ${roomView === 'table' ? 'is-active' : ''}`}
+                      onClick={() => setRoomView('table')}
+                    >
+                      Table
+                    </button>
+                    <button
+                      className={`secondary-button compact ${roomView === 'grid' ? 'is-active' : ''}`}
+                      onClick={() => setRoomView('grid')}
+                    >
+                      Grid
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {filteredRooms.length === 0 ? <p className="muted-text empty-state">No rooms match the current filter.</p> : null}
+
+              {roomView === 'table' ? (
+                <div className="table-wrap rooms-table-wrap">
+                  <table className="rooms-table">
+                    <thead>
+                      <tr>
+                        <th>USID</th>
+                        <th>Building</th>
+                        <th>Level</th>
+                        <th>Room</th>
+                        <th>Door</th>
+                        <th>Image</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredRooms.map((room) => (
+                        <tr key={room.usid}>
+                          <td><span className="table-mono">{room.usid}</span></td>
+                          <td>{room.building}</td>
+                          <td>{room.level}</td>
+                          <td>{room.room}</td>
+                          <td>{room.door}</td>
+                          <td>{room.image ? <span className="status-dot is-ok" /> : <span className="status-dot is-missing" />}</td>
+                          <td>
+                            <div className="table-actions">
+                              <button className="secondary-button compact" onClick={() => setRoomForm(room)}>
+                                Edit
+                              </button>
+                              <button className="danger-button compact" onClick={() => void handleDeleteRoom(room.usid)}>
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="rooms-grid">
+                  {filteredRooms.map((room) => (
+                    <article key={room.usid} className="room-card">
+                      {room.image ? <img src={resolveAssetUrl(room.image)} alt={room.room} /> : <div className="room-card-placeholder">No image</div>}
+                      <strong>{room.usid}</strong>
+                      <span>{room.building}</span>
+                      <span>{room.level}</span>
+                      <span>Room {room.room}</span>
+                      <span>Door {room.door}</span>
+                      <div className="button-row">
                         <button className="secondary-button compact" onClick={() => setRoomForm(room)}>
                           Edit
                         </button>
@@ -1452,105 +1597,361 @@ function AdminApp() {
                           Delete
                         </button>
                       </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="rooms-grid">
-            {filteredRooms.map((room) => (
-              <article key={room.usid} className="room-card">
-                {room.image ? <img src={resolveAssetUrl(room.image)} alt={room.room} /> : <div className="room-card-placeholder">No image</div>}
-                <strong>{room.usid}</strong>
-                <span>{room.building}</span>
-                <span>{room.level}</span>
-                <span>Room {room.room}</span>
-                <span>Door {room.door}</span>
-                <div className="button-row">
-                  <button className="secondary-button compact" onClick={() => setRoomForm(room)}>
-                    Edit
-                  </button>
-                  <button className="danger-button compact" onClick={() => void handleDeleteRoom(room.usid)}>
-                    Delete
-                  </button>
+                    </article>
+                  ))}
                 </div>
-              </article>
-            ))}
+              )}
+            </section>
           </div>
         )}
-      </section>
 
-      <section className="admin-grid bottom-grid">
-        <article className="admin-card">
-          <div className="section-head">
-            <h2>Feedback</h2>
-            <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/feedback.xlsx')}>
-              Export Feedback XLSX
-            </a>
+        {activeTab === 'import' && (
+          <div className="admin-tab-panel">
+            <section className="admin-grid">
+              <article className="admin-card emphasis-card">
+                <div className="section-head">
+                  <h2>Excel Import</h2>
+                  <button className="secondary-button compact" onClick={() => void handleExportTemplate()}>
+                    Export Template
+                  </button>
+                </div>
+                <p className="muted-text">Download the template, fill in your rooms and upload the completed file. The import replaces the current room list.</p>
+                <label
+                  className="drop-zone"
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    const file = event.dataTransfer.files?.[0]
+                    if (file) {
+                      void handleImportFile(file)
+                    }
+                  }}
+                >
+                  <span className="drop-zone-icon">⬆</span>
+                  <strong>Drag and drop your Excel file</strong>
+                  <span className="drop-zone-note">USID · Building · Level · Room · Door · Image</span>
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                    hidden
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) {
+                        void handleImportFile(file)
+                      }
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                </label>
+              </article>
+
+              <article className="admin-card">
+                <h2>How it works</h2>
+                <ol className="import-steps">
+                  <li>Click <strong>Export Template</strong> to download a pre-formatted Excel file.</li>
+                  <li>Fill in the rows with your room data — one room per row.</li>
+                  <li>Drag the completed file into the upload area or click to browse.</li>
+                  <li>Confirm the import — this will replace all existing rooms.</li>
+                </ol>
+                <div className="import-stats">
+                  <div className="import-stat">
+                    <strong>{rooms.length}</strong>
+                    <span>Current rooms</span>
+                  </div>
+                  <div className="import-stat">
+                    <strong>{imagePageData.total}</strong>
+                    <span>Available images</span>
+                  </div>
+                </div>
+              </article>
+            </section>
           </div>
-          <p className="muted-text">Shows the latest 5 feedback entries. Export for the full list.</p>
+        )}
 
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>USID</th>
-                  <th>Rating</th>
-                  <th>Comment</th>
-                  <th>Timestamp</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentFeedback.map((entry) => (
-                  <tr key={entry.id}>
-                    <td>{entry.usid}</td>
-                    <td>{entry.rating}</td>
-                    <td>{entry.comment || 'No comment'}</td>
-                    <td>{formatDate(entry.timestamp)}</td>
-                  </tr>
+        {activeTab === 'templates' && (
+          <div className="admin-tab-panel">
+            <section className="admin-card">
+              <div className="section-head">
+                <div>
+                  <h2>Building Templates</h2>
+                  <p className="muted-text">
+                    {roomForm.building
+                      ? matchingBuildingTemplates.length > 0
+                        ? `Showing template matches for ${roomForm.building}.`
+                        : `No saved template matches ${roomForm.building} yet.`
+                      : 'Manage floor plan templates used on the kiosk start screen.'}
+                  </p>
+                </div>
+                <div className="template-panel-actions">
+                  <span className="template-count">{matchingBuildingTemplates.length} available</span>
+                  <label className="upload-button compact">
+                    {isUploadingTemplates ? 'Uploading...' : 'Upload templates'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={(event) => {
+                        void handleTemplateUpload(event.target.files)
+                        event.currentTarget.value = ''
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {matchingBuildingTemplates.length > 0 ? (
+                <div className="template-library-grid">
+                  {matchingBuildingTemplates.map((template) => (
+                    <article
+                      key={template.fileName}
+                      className={`template-card ${roomForm.image === template.path ? 'is-selected' : ''}`}
+                    >
+                      <div className="template-card-preview">
+                        <img src={resolveAssetUrl(template.path)} alt={template.building} />
+                      </div>
+                      <div className="template-card-body">
+                        <div className="template-card-header">
+                          <div className="template-card-meta">
+                            <strong>{template.building}</strong>
+                            <span>{template.fileName}</span>
+                          </div>
+                          <label className="template-visibility-toggle">
+                            <input
+                              type="checkbox"
+                              checked={template.showOnHome}
+                              onChange={(event) => {
+                                void handleToggleBuildingTemplateVisibility(template, event.target.checked)
+                              }}
+                            />
+                            <span>Kiosk</span>
+                          </label>
+                        </div>
+                        <div className="template-card-rename">
+                          <input
+                            value={templateRenameDrafts[template.fileName] ?? template.name}
+                            onChange={(event) => {
+                              const nextValue = event.target.value
+                              setTemplateRenameDrafts((current) => ({ ...current, [template.fileName]: nextValue }))
+                            }}
+                            placeholder="Display name"
+                          />
+                          <button className="primary-button compact" onClick={() => void handleRenameBuildingTemplate(template)}>
+                            Rename
+                          </button>
+                        </div>
+                        <div className="template-card-actions">
+                          {roomForm.image === template.path ? (
+                            <button
+                              className="secondary-button compact"
+                              onClick={() => { setRoomForm((c) => ({ ...c, image: '', building: '' })); setStatusNotice({ tone: 'info', message: 'Template deselected.' }) }}
+                            >
+                              Deselect
+                            </button>
+                          ) : (
+                            <button
+                              className="secondary-button compact"
+                              onClick={() => handleUseBuildingTemplate(template)}
+                            >
+                              Use template
+                            </button>
+                          )}
+                          <button className="danger-button compact" onClick={() => void handleDeleteBuildingTemplate(template)}>
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted-text">Upload a new template or add a building name to narrow existing matches.</p>
+              )}
+            </section>
+          </div>
+        )}
+
+        {activeTab === 'images' && (
+          <div className="admin-tab-panel">
+            <section className="admin-card">
+              <div className="section-head">
+                <div>
+                  <h2>Image Library</h2>
+                  <p className="muted-text">Upload images, rename them and assign to rooms.</p>
+                </div>
+                <label className="upload-button">
+                  {isUploadingImages ? 'Uploading...' : 'Upload images'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    hidden
+                    onChange={(event) => {
+                      void handleUpload(event.target.files)
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                </label>
+              </div>
+
+              <div className="toolbar-row">
+                <input
+                  className="search-filter"
+                  placeholder="Search images by name"
+                  value={imageQuery}
+                  onChange={(event) => {
+                    setImageQuery(event.target.value)
+                    setImagePage(1)
+                  }}
+                />
+                <span className="muted-text">{imagePageData.total} images total</span>
+              </div>
+
+              {imagePageData.items.length === 0 ? <p className="muted-text">No images found for the current filter.</p> : null}
+
+              <div className="image-library-grid">
+                {imagePageData.items.map((image) => (
+                  <article key={image.fileName} className="image-library-card">
+                    <img src={resolveAssetUrl(image.path)} alt={image.name} />
+                    <div className="image-library-meta">
+                      <strong>{image.name}</strong>
+                      <span>{image.fileName}</span>
+                    </div>
+                    <input
+                      value={imageRenameDrafts[image.fileName] ?? image.name}
+                      onChange={(event) => {
+                        const nextValue = event.target.value
+                        setImageRenameDrafts((current) => ({ ...current, [image.fileName]: nextValue }))
+                      }}
+                      placeholder="Rename image"
+                    />
+                    <div className="button-row">
+                      <button className="secondary-button compact" onClick={() => { setRoomForm((current) => ({ ...current, image: image.path })); setActiveTab('rooms') }}>
+                        Use for room
+                      </button>
+                      <button className="primary-button compact" onClick={() => void handleRenameImage(image)}>
+                        Rename
+                      </button>
+                    </div>
+                  </article>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </article>
+              </div>
 
-        <article className="admin-card">
-          <div className="section-head">
-            <h2>Report</h2>
-            <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/report.xlsx')}>
-              Export Report XLSX
-            </a>
+              <div className="pagination-row">
+                <button className="secondary-button compact" disabled={imagePageData.page <= 1} onClick={() => setImagePage((current) => Math.max(1, current - 1))}>
+                  Previous
+                </button>
+                <span>
+                  Page {imagePageData.page} of {imagePageData.totalPages}
+                </span>
+                <button
+                  className="secondary-button compact"
+                  disabled={imagePageData.page >= imagePageData.totalPages}
+                  onClick={() => setImagePage((current) => Math.min(imagePageData.totalPages, current + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </section>
           </div>
-          <p className="muted-text">Shows the latest 5 report entries with search counter per USID. Export for the full list.</p>
+        )}
 
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>USID</th>
-                  <th>Searches</th>
-                  <th>Up</th>
-                  <th>Down</th>
-                  <th>Last activity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentReport.map((entry) => (
-                  <tr key={entry.usid}>
-                    <td>{entry.usid}</td>
-                    <td>{entry.searches}</td>
-                    <td>{entry.up}</td>
-                    <td>{entry.down}</td>
-                    <td>{formatDate(entry.lastActivity)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {activeTab === 'reports' && (
+          <div className="admin-tab-panel">
+            <section className="dashboard-panels">
+              <article className="admin-card">
+                <div className="section-head">
+                  <h2>Feedback</h2>
+                  <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/feedback.xlsx')}>
+                    Export XLSX
+                  </a>
+                </div>
+                <p className="muted-text">All feedback entries. Export for offline analysis.</p>
+
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>USID</th>
+                        <th>Rating</th>
+                        <th>Comment</th>
+                        <th>Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {feedback.length === 0 ? (
+                        <tr><td colSpan={4}>No feedback recorded yet.</td></tr>
+                      ) : feedback.map((entry) => (
+                        <tr key={entry.id}>
+                          <td><span className="table-mono">{entry.usid}</span></td>
+                          <td><span className="rating-badge">{['😡','😕','😐','🙂','😍'][entry.rating - 1]} {entry.rating}/5</span></td>
+                          <td>{entry.comment || <span className="muted-text">No comment</span>}</td>
+                          <td>{formatDate(entry.timestamp)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+
+              <article className="admin-card">
+                <div className="section-head">
+                  <h2>Search Report</h2>
+                  <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/report.xlsx')}>
+                    Export XLSX
+                  </a>
+                </div>
+                <p className="muted-text">All search entries with counters per USID.</p>
+
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>USID</th>
+                        <th>Searches</th>
+                        <th>Up</th>
+                        <th>Down</th>
+                        <th>Last activity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {report.length === 0 ? (
+                        <tr><td colSpan={5}>No report data yet.</td></tr>
+                      ) : report.map((entry) => (
+                        <tr key={entry.usid}>
+                          <td><span className="table-mono">{entry.usid}</span></td>
+                          <td><strong>{entry.searches}</strong></td>
+                          <td>{entry.up}</td>
+                          <td>{entry.down}</td>
+                          <td>{formatDate(entry.lastActivity)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            </section>
           </div>
-        </article>
-      </section>
+        )}
+      </div>
+      {modal && (
+        <div className="modal-overlay" onClick={dismissModal}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>{modal.title}</h3>
+            <p>{modal.message}</p>
+            <div className="modal-actions">
+              {modal.onConfirm ? (
+                <>
+                  <button className="secondary-button" onClick={dismissModal}>Cancel</button>
+                  <button className="danger-button" onClick={modal.onConfirm}>Confirm</button>
+                </>
+              ) : (
+                <button className="primary-button" onClick={() => setModal(null)}>OK</button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

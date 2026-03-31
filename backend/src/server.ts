@@ -23,7 +23,7 @@ type Room = {
 type FeedbackRow = {
   id: number
   usid: string
-  rating: 'up' | 'down'
+  rating: number
   comment: string
   timestamp: string
 }
@@ -94,7 +94,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     usid TEXT NOT NULL,
-    rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
     comment TEXT NOT NULL DEFAULT '',
     timestamp TEXT NOT NULL
   );
@@ -110,6 +110,28 @@ database.exec(`
     show_on_home INTEGER NOT NULL DEFAULT 1 CHECK (show_on_home IN (0, 1))
   );
 `)
+
+// Migrate old feedback table: convert text rating ('up'/'down') to integer (1-5)
+try {
+  const info = database.prepare("PRAGMA table_info('feedback')").all() as { name: string; type: string }[]
+  const ratingCol = info.find((c) => c.name === 'rating')
+  if (ratingCol && ratingCol.type === 'TEXT') {
+    database.exec(`
+      ALTER TABLE feedback RENAME TO feedback_old;
+      CREATE TABLE feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usid TEXT NOT NULL,
+        rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+        comment TEXT NOT NULL DEFAULT '',
+        timestamp TEXT NOT NULL
+      );
+      INSERT INTO feedback (usid, rating, comment, timestamp)
+        SELECT usid, CASE WHEN rating = 'up' THEN 4 ELSE 2 END, comment, timestamp FROM feedback_old;
+      DROP TABLE feedback_old;
+    `)
+    console.log('Migrated feedback table from text to integer rating.')
+  }
+} catch { /* table is already in new format */ }
 
 const roomSchema = z.object({
   usid: z.string().trim().regex(/^\d{6}$/),
@@ -127,7 +149,7 @@ const searchSchema = z.object({
 const feedbackSchema = z
   .object({
     usid: z.string().trim().regex(/^\d{6}$/),
-    rating: z.enum(['up', 'down']),
+    rating: z.number().int().min(1).max(5),
     comment: z.string().trim().max(500).optional().default(''),
   })
   .superRefine((value, ctx) => {
@@ -1049,6 +1071,63 @@ app.get('/api/admin/feedback.xlsx', requireAdmin, async (_req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   res.setHeader('Content-Disposition', 'attachment; filename="pathfinder-feedback.xlsx"')
   res.send(workbook)
+})
+
+// ── Chart analytics ──────────────────────────────────────────────
+app.get('/api/admin/analytics/charts', requireAdmin, (_req, res) => {
+  // 1. Searches per day (last 30 days)
+  const searchesPerDay = database.prepare(`
+    SELECT date(timestamp) AS day, COUNT(*) AS count
+    FROM analytics
+    WHERE timestamp >= date('now', '-30 days')
+    GROUP BY day ORDER BY day
+  `).all() as Array<{ day: string; count: number }>
+
+  // 2. Feedback per day (last 30 days)
+  const feedbackPerDay = database.prepare(`
+    SELECT date(timestamp) AS day, COUNT(*) AS count
+    FROM feedback
+    WHERE timestamp >= date('now', '-30 days')
+    GROUP BY day ORDER BY day
+  `).all() as Array<{ day: string; count: number }>
+
+  // 3. Feedback rating distribution
+  const ratingDistribution = database.prepare(`
+    SELECT rating, COUNT(*) AS count
+    FROM feedback
+    GROUP BY rating ORDER BY rating
+  `).all() as Array<{ rating: number; count: number }>
+
+  // 4. Top 10 searched rooms
+  const topRooms = database.prepare(`
+    SELECT a.usid, COUNT(*) AS searches, COALESCE(r.building, '?') AS building, COALESCE(r.room, '?') AS room
+    FROM analytics a LEFT JOIN rooms r ON a.usid = r.usid
+    GROUP BY a.usid ORDER BY searches DESC LIMIT 10
+  `).all() as Array<{ usid: string; searches: number; building: string; room: string }>
+
+  // 5. Searches by building
+  const searchesByBuilding = database.prepare(`
+    SELECT COALESCE(r.building, 'Unknown') AS building, COUNT(*) AS count
+    FROM analytics a LEFT JOIN rooms r ON a.usid = r.usid
+    GROUP BY building ORDER BY count DESC
+  `).all() as Array<{ building: string; count: number }>
+
+  // 6. Average rating per day (last 30 days)
+  const avgRatingPerDay = database.prepare(`
+    SELECT date(timestamp) AS day, ROUND(AVG(rating), 2) AS avg
+    FROM feedback
+    WHERE timestamp >= date('now', '-30 days')
+    GROUP BY day ORDER BY day
+  `).all() as Array<{ day: string; avg: number }>
+
+  res.json({
+    searchesPerDay,
+    feedbackPerDay,
+    ratingDistribution,
+    topRooms,
+    searchesByBuilding,
+    avgRatingPerDay,
+  })
 })
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

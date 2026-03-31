@@ -1,0 +1,95 @@
+<svg width="420" height="300" viewBox="0 0 420 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="frame" x1="79" y1="54" x2="324" y2="245" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#42566F"/>
+      <stop offset="0.45" stop-color="#E5EDF5"/>
+      <stop offset="1" stop-color="#1B2430"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="102" y1="76" x2="308" y2="221" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAFDFF"/>
+      <stop offset="0.55" stop-color="#EAF4FB"/>
+      <stop offset="1" stop-color="#D0DEE8"/>
+    </linearGradient>
+    <linearGradient id="screenGlow" x1="244" y1="110" x2="320" y2="185" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A6EDFF" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#52B3FF" stop-opacity="0.18"/>
+    </linearGradient>
+    <linearGradient id="route" x1="178" y1="135" x2="264" y2="169" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00B8FF"/>
+      <stop offset="1" stop-color="#2B74FF"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="133" y1="75" x2="133" y2="142" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF7848"/>
+      <stop offset="0.7" stop-color="#FF1D00"/>
+      <stop offset="1" stop-color="#B30000"/>
+    </linearGradient>
+    <linearGradient id="stand" x1="198" y1="211" x2="250" y2="282" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#213041"/>
+      <stop offset="1" stop-color="#0A111A"/>
+    </linearGradient>
+    <filter id="shadow" x="40" y="40" width="340" height="250" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="10" flood-color="#020617" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <path d="M107 65L313 52C322 51 331 57 335 66L365 136C369 146 364 157 355 160L118 200C109 202 100 198 95 189L58 116C52 104 60 89 73 87L107 65Z" fill="#17202B"/>
+    <path d="M112 70L308 59C316 58 323 63 327 70L353 132C356 139 352 148 344 150L121 186C113 187 106 183 102 176L70 116C65 107 72 96 83 94L112 70Z" fill="url(#frame)"/>
+    <path d="M121 80L300 69C307 69 313 73 316 79L336 128C339 134 335 141 328 143L126 173C119 174 114 171 111 165L87 119C83 112 87 103 95 101L121 80Z" fill="url(#bezel)" stroke="#43566B" stroke-width="2"/>
+
+    <polygon points="127,90 295,81 323,132 132,160" fill="#EEF6FB"/>
+    <polygon points="227,87 293,83 305,103 239,106" fill="#D7E7F2" opacity="0.95"/>
+    <polygon points="135,93 190,91 177,102 123,105" fill="#D6E2EB"/>
+    <polygon points="214,110 310,107 321,128 225,134" fill="url(#screenGlow)"/>
+
+    <g opacity="0.92" stroke="#50647A" stroke-width="2">
+      <polyline points="141,101 167,100 161,106 136,108 141,101" fill="#F4F8FB"/>
+      <polyline points="147,116 183,114 178,122 143,124 147,116" fill="#EAF0F5"/>
+      <polyline points="130,129 173,127 169,135 126,138 130,129" fill="#EAF0F5"/>
+      <polyline points="188,137 236,135 230,147 181,150 188,137" fill="#EAF0F5"/>
+      <polyline points="247,139 283,138 278,146 241,148 247,139" fill="#EAF0F5"/>
+    </g>
+
+    <g fill="#2B3C50">
+      <polygon points="150,109 162,108 168,121 156,122"/>
+      <polygon points="166,109 178,108 184,121 172,122"/>
+      <polygon points="140,125 153,124 159,137 146,138"/>
+      <polygon points="157,124 170,123 176,136 163,137"/>
+      <polygon points="128,141 141,140 148,154 134,155"/>
+      <polygon points="145,140 158,139 165,153 151,154"/>
+      <polygon points="231,90 246,89 252,101 237,102"/>
+      <polygon points="250,89 265,88 271,100 256,101"/>
+      <polygon points="269,88 284,87 290,99 275,100"/>
+      <polygon points="239,107 254,107 260,120 245,121"/>
+      <polygon points="258,106 273,106 279,119 264,120"/>
+      <polygon points="277,106 292,106 298,118 283,119"/>
+      <polygon points="228,124 243,124 248,136 233,137"/>
+      <polygon points="247,124 262,124 267,135 252,136"/>
+      <polygon points="266,123 281,123 286,135 271,136"/>
+    </g>
+
+    <path d="M164 132C178 128 191 130 203 137C208 140 213 140 219 137L244 124C249 121 255 122 260 127L265 132C270 136 270 143 264 146L232 164C226 168 219 169 212 166L183 156C175 153 170 146 169 138L164 132Z" fill="url(#route)" opacity="0.96"/>
+    <path d="M177 143L191 144" stroke="#D9F4FF" stroke-width="3" stroke-linecap="round"/>
+    <path d="M199 148L210 149" stroke="#D9F4FF" stroke-width="3" stroke-linecap="round"/>
+    <path d="M219 153L232 154" stroke="#D9F4FF" stroke-width="3" stroke-linecap="round"/>
+    <path d="M241 149L252 150" stroke="#D9F4FF" stroke-width="3" stroke-linecap="round"/>
+
+    <path d="M145 78C132 78 122 88 122 101C122 119 145 143 145 143C145 143 168 119 168 101C168 88 158 78 145 78Z" fill="url(#pin)" stroke="#761100" stroke-width="2.2"/>
+    <circle cx="145" cy="101" r="11" fill="#F1F7FC" stroke="#24384D" stroke-width="2"/>
+
+    <g>
+      <polygon points="269,132 297,127 315,140 286,146" fill="#1E293B" stroke="#0EA5E9" stroke-width="1.5"/>
+      <polygon points="286,146 315,140 315,162 286,169" fill="#0F172A" stroke="#38BDF8" stroke-width="1.5"/>
+      <polygon points="269,132 286,146 286,169 269,154" fill="#111827" stroke="#38BDF8" stroke-width="1.5"/>
+      <path d="M273 144L301 138" stroke="#BAE6FD" stroke-width="1.5"/>
+      <path d="M273 152L301 146" stroke="#BAE6FD" stroke-width="1.5"/>
+      <path d="M286 146V169" stroke="#38BDF8" stroke-width="1.5"/>
+    </g>
+
+    <path d="M207 193L243 189L253 244L198 250L207 193Z" fill="url(#stand)"/>
+    <path d="M205 194L224 192L236 248L216 250L205 194Z" fill="#14202C" opacity="0.82"/>
+    <path d="M179 250L262 243L282 259L199 267L179 250Z" fill="#0F1722"/>
+    <path d="M199 267L282 259V272L199 280V267Z" fill="#152231"/>
+    <path d="M179 250V264L199 280V267L179 250Z" fill="#0A111A"/>
+  </g>
+</svg>

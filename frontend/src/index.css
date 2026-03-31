@@ -44,11 +44,19 @@ body {
 }
 
 body.admin-mode {
-  color: #e5eefb;
+  color: #334155;
   background:
-    radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 28%),
-    radial-gradient(circle at top right, rgba(99, 102, 241, 0.18), transparent 24%),
-    linear-gradient(180deg, #050816 0%, #0a1022 42%, #0d1328 100%);
+    radial-gradient(circle at top left, rgba(96, 165, 250, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(45, 212, 191, 0.12), transparent 24%),
+    linear-gradient(180deg, #f8fbfd 0%, #eef4f8 58%, #edf3f8 100%);
+}
+
+body.admin-mode[data-admin-theme='dark'] {
+  color: #c8d6e5;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(99, 102, 241, 0.12), transparent 24%),
+    linear-gradient(180deg, #0b1221 0%, #0d1526 58%, #111b2f 100%);
 }
 
 body.kiosk-mode {

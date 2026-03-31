@@ -46,7 +46,7 @@ export function searchRoom(usid: string) {
   })
 }
 
-export function sendFeedback(usid: string, rating: 'up' | 'down', comment: string) {
+export function sendFeedback(usid: string, rating: number, comment: string) {
   return request<{ ok: true }>('/api/feedback', {
     method: 'POST',
     body: JSON.stringify({ usid, rating, comment }),
@@ -192,4 +192,8 @@ export function getReport() {
 
 export function getDownloadUrl(path: string) {
   return `${apiBase}${path}`
+}
+
+export function getChartData() {
+  return request<import('./types').ChartData>('/api/admin/analytics/charts')
 }

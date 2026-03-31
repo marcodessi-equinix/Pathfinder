@@ -10,3 +10,4 @@
 - Admin users can now upload, rename, and delete building templates directly from the admin panel; room references are updated on rename and cleared on delete.
 - Building templates now have a persisted `showOnHome` flag so admins can decide which templates appear on the kiosk start screen.
 - The admin area was redesigned as a dedicated dark-mode command-center UI with a premium login screen and stronger dashboard hierarchy.
+- Container deployments now use explicit storage paths, a backend healthcheck, and a seeded volume for building templates so fresh VM installs behave closer to local development.

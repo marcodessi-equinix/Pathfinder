@@ -136,10 +136,13 @@ docker compose up --build -d
 
 Danach baut Portainer beide Images direkt aus dem Repository und startet den kompletten Stack. Datenbank und Uploads landen in benannten Docker-Volumes und bleiben bei Container-Neustarts erhalten.
 
+Seit dem aktuellen Stack-Setup werden auch Building-Templates in einem eigenen Volume gehalten. Beim ersten Start werden die mitgelieferten Standard-Templates automatisch in dieses Volume kopiert.
+
 ## Daten und Persistenz
 
 - SQLite-Datenbank: Docker-Volume pathfinder_data
 - Uploads: Docker-Volume pathfinder_uploads
+- Building-Templates: Docker-Volume pathfinder_building_templates
 - Optionaler Erstimport aus `backend/legacy/db.json` oder `db.json`: Wird nur ausgeführt, wenn die Datenbank noch leer ist
 
 Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wird der Legacy-Import danach nicht erneut ausgeführt. In dem Fall musst du entweder importieren oder das Daten-Volume bewusst neu anlegen.
@@ -173,10 +176,13 @@ Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wir
 ## Troubleshooting
 
 - Leere Startseite oder API-Fehler: Prüfen, ob der backend-Service läuft und Portainer beide Images erfolgreich gebaut hat.
+- `502 Bad Gateway` bei `/api/...`: Das ist fast immer ein Backend-Problem, nicht das Frontend. Zuerst `docker compose logs backend` oder die Backend-Logs in Portainer prüfen und dann `/api/health` direkt testen.
 - Login funktioniert nicht: ADMIN_PASSWORD in Portainer oder .env prüfen und Stack neu deployen.
+- Browser-Fehler mit `chrome-extension://...` kommen von Extensions und sind für PATHFINDER in der Regel irrelevant.
 - Raumimport: Im Admin-Bereich zuerst das Excel-Template exportieren, dann dieselben Spalten im ersten Arbeitsblatt beibehalten und die Datei wieder importieren.
 - Viele Bilder im Admin-Bereich: Die Bildbibliothek lädt nur eine Seite gleichzeitig und kann über die Suche gefiltert werden.
 - Bilder fehlen nach Redeploy: sicherstellen, dass die Volumes nicht gelöscht wurden.
+- Templates fehlen nach Redeploy: sicherstellen, dass das Volume `pathfinder_building_templates` vorhanden ist und der Stack auf dem aktuellen Stand läuft.
 - Optionaler Erstimport greift nur beim allerersten Start mit leerer Datenbank und nur wenn eine `db.json` vorhanden ist.
 
 ## Hinweise

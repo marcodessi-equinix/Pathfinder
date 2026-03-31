@@ -5,7 +5,7 @@ import ExcelJS from 'exceljs'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
@@ -54,9 +54,10 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const backendDir = path.resolve(__dirname, '..')
 const projectDir = path.resolve(backendDir, '..')
-const dataDir = path.join(backendDir, 'data')
-const uploadsDir = path.join(backendDir, 'uploads')
-const buildingTemplatesDir = path.join(backendDir, 'FR2_Grundriss')
+const dataDir = process.env.PATHFINDER_DATA_DIR ?? path.join(backendDir, 'data')
+const uploadsDir = process.env.PATHFINDER_UPLOADS_DIR ?? path.join(backendDir, 'uploads')
+const defaultBuildingTemplatesDir = process.env.PATHFINDER_DEFAULT_BUILDING_TEMPLATES_DIR ?? path.join(backendDir, 'FR2_Grundriss')
+const buildingTemplatesDir = process.env.PATHFINDER_BUILDING_TEMPLATES_DIR ?? defaultBuildingTemplatesDir
 const databaseFile = path.join(dataDir, 'pathfinder.sqlite')
 dotenv.config({ path: path.join(projectDir, '.env') })
 
@@ -75,6 +76,48 @@ const supportedImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gi
 mkdirSync(dataDir, { recursive: true })
 mkdirSync(uploadsDir, { recursive: true })
 mkdirSync(buildingTemplatesDir, { recursive: true })
+
+function seedBuildingTemplatesFromDefaults() {
+  if (path.resolve(buildingTemplatesDir) === path.resolve(defaultBuildingTemplatesDir)) {
+    return
+  }
+
+  if (!existsSync(defaultBuildingTemplatesDir)) {
+    return
+  }
+
+  const existingTemplates = readdirSync(buildingTemplatesDir).filter((fileName) =>
+    supportedImageExtensions.has(path.extname(fileName).toLowerCase()),
+  )
+
+  if (existingTemplates.length > 0) {
+    return
+  }
+
+  const defaultTemplates = readdirSync(defaultBuildingTemplatesDir).filter((fileName) =>
+    supportedImageExtensions.has(path.extname(fileName).toLowerCase()),
+  )
+
+  for (const fileName of defaultTemplates) {
+    copyFileSync(
+      path.join(defaultBuildingTemplatesDir, fileName),
+      path.join(buildingTemplatesDir, fileName),
+    )
+  }
+
+  if (defaultTemplates.length > 0) {
+    console.log(`Seeded ${defaultTemplates.length} default building templates into ${buildingTemplatesDir}`)
+  }
+}
+
+seedBuildingTemplatesFromDefaults()
+
+console.log('Pathfinder storage paths:', {
+  dataDir,
+  uploadsDir,
+  buildingTemplatesDir,
+  defaultBuildingTemplatesDir,
+})
 
 const database = new DatabaseSync(databaseFile)
 const sessions = new Map<string, number>()

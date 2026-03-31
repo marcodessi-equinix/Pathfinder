@@ -25,6 +25,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/backend/dist ./dist
 COPY backend/FR2_Grundriss ./FR2_Grundriss
+COPY backend/FR2_Grundriss ./default-building-templates
 
 RUN mkdir -p /app/data /app/uploads
 

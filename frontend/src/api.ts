@@ -128,8 +128,51 @@ export function getBuildingTemplates() {
   return request<BuildingTemplate[]>('/api/admin/building-templates')
 }
 
+export async function uploadBuildingTemplates(files: File[]) {
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append('templates', file)
+  }
+
+  const response = await fetch(`${apiBase}/api/admin/building-templates`, {
+    method: 'POST',
+    body: formData,
+    credentials: 'include',
+  })
+
+  const payload = await response.json()
+  if (!response.ok) {
+    throw new Error(String(payload.error ?? 'Upload failed'))
+  }
+
+  return payload as { uploaded: BuildingTemplate[] }
+}
+
 export function getPublicBuildingTemplates() {
   return request<BuildingTemplate[]>('/api/building-templates')
+}
+
+export function renameBuildingTemplate(fileName: string, name: string) {
+  return request<{ ok: true; template: BuildingTemplate }>(`/api/admin/building-templates/${encodeURIComponent(fileName)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function setBuildingTemplateVisibility(fileName: string, showOnHome: boolean) {
+  return request<{ ok: true; template: BuildingTemplate }>(
+    `/api/admin/building-templates/${encodeURIComponent(fileName)}/visibility`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ showOnHome }),
+    },
+  )
+}
+
+export function deleteBuildingTemplate(fileName: string) {
+  return request<{ ok: true }>(`/api/admin/building-templates/${encodeURIComponent(fileName)}`, {
+    method: 'DELETE',
+  })
 }
 
 export function renameImage(fileName: string, name: string) {

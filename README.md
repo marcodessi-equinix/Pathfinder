@@ -46,12 +46,10 @@ Für Deployment:
 
 ## Lokale Entwicklung
 
-1. Abhängigkeiten im Root sowie in Frontend und Backend installieren:
+1. Abhängigkeiten im Hauptordner installieren:
 
 ```powershell
 npm install
-npm --prefix frontend install
-npm --prefix backend install
 ```
 
 1. Entwicklungsserver starten:
@@ -158,6 +156,10 @@ Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wir
 - Die App ist auf Safari im Kiosk-Stil ausgelegt.
 - Für appähnliches Verhalten kann die URL über Zum Home-Bildschirm gespeichert werden.
 - Manifest und Apple-Tags sind bereits eingebunden.
+- Für den Kiosk-Betrieb sollte das iPad im Querformat bleiben; die Web-App ist auf Landscape optimiert.
+- Für einen echten Einzelgerät-Kiosk zusätzlich iPad Guided Access bzw. Geführten Zugriff aktivieren, damit niemand Safari oder die App versehentlich verlässt.
+- Die Kiosk-Ansicht hält den Bildschirm nach Möglichkeit per Wake Lock aktiv und reduziert versehentliche Touch-/Safari-Nebeneffekte.
+- Die Admin-Seite ist für Bedienung vom PC gedacht; ein Aufruf von `/admin` auf dem iPad wird zurück auf den Kiosk umgeleitet.
 
 ## Kurze Anleitung für den produktiven Einsatz
 

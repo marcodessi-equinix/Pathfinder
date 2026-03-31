@@ -5,7 +5,7 @@ import ExcelJS from 'exceljs'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
@@ -47,6 +47,7 @@ type BuildingTemplate = {
   name: string
   building: string
   path: string
+  showOnHome: boolean
 }
 
 const __filename = fileURLToPath(import.meta.url)
@@ -73,6 +74,7 @@ const supportedImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gi
 
 mkdirSync(dataDir, { recursive: true })
 mkdirSync(uploadsDir, { recursive: true })
+mkdirSync(buildingTemplatesDir, { recursive: true })
 
 const database = new DatabaseSync(databaseFile)
 const sessions = new Map<string, number>()
@@ -101,6 +103,11 @@ database.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     usid TEXT NOT NULL,
     timestamp TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS building_template_settings (
+    file_name TEXT PRIMARY KEY,
+    show_on_home INTEGER NOT NULL DEFAULT 1 CHECK (show_on_home IN (0, 1))
   );
 `)
 
@@ -148,6 +155,10 @@ const renameImageSchema = z.object({
   name: z.string().trim().min(1).max(120),
 })
 
+const buildingTemplateVisibilitySchema = z.object({
+  showOnHome: z.boolean(),
+})
+
 const loginSchema = z.object({
   password: z.string().min(1),
 })
@@ -182,7 +193,22 @@ const listFeedbackStatement = database.prepare(
 const listAnalyticsStatement = database.prepare(
   'SELECT usid, timestamp FROM analytics ORDER BY timestamp DESC',
 )
+const listTemplateSettingsStatement = database.prepare(
+  'SELECT file_name AS fileName, show_on_home AS showOnHome FROM building_template_settings',
+)
+const upsertTemplateVisibilityStatement = database.prepare(`
+  INSERT INTO building_template_settings (file_name, show_on_home)
+  VALUES (?, ?)
+  ON CONFLICT(file_name) DO UPDATE SET show_on_home = excluded.show_on_home
+`)
+const renameTemplateSettingsStatement = database.prepare(
+  'UPDATE building_template_settings SET file_name = ? WHERE file_name = ?',
+)
+const deleteTemplateSettingsStatement = database.prepare(
+  'DELETE FROM building_template_settings WHERE file_name = ?',
+)
 const updateRoomImageStatement = database.prepare('UPDATE rooms SET image = ? WHERE image = ?')
+const clearRoomImageStatement = database.prepare('UPDATE rooms SET image = ? WHERE image = ?')
 
 function normalizeImagePath(image: string): string {
   if (!image) {
@@ -474,29 +500,37 @@ function getUploadExtension(file: Express.Multer.File) {
   }
 }
 
-function sanitizeImageBaseName(name: string) {
+function sanitizeAssetBaseName(name: string) {
   const normalized = name
-    .normalize('NFKD')
-    .replace(/[^\x00-\x7F]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .normalize('NFC')
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '')
 
-  return normalized.slice(0, 80) || `image-${Date.now()}`
+  return normalized.slice(0, 80).trim() || `asset-${Date.now()}`
 }
 
-function buildUniqueImageFileName(rawName: string, extension: string, currentFileName?: string) {
-  const safeBaseName = sanitizeImageBaseName(rawName)
+function buildUniqueFileName(directory: string, rawName: string, extension: string, currentFileName?: string) {
+  const safeBaseName = sanitizeAssetBaseName(rawName)
   const safeExtension = extension.toLowerCase()
   let candidate = `${safeBaseName}${safeExtension}`
   let counter = 2
 
-  while (candidate !== currentFileName && existsSync(path.join(uploadsDir, candidate))) {
-    candidate = `${safeBaseName}-${counter}${safeExtension}`
+  while (candidate !== currentFileName && existsSync(path.join(directory, candidate))) {
+    candidate = `${safeBaseName} (${counter})${safeExtension}`
     counter += 1
   }
 
   return candidate
+}
+
+function buildUniqueImageFileName(rawName: string, extension: string, currentFileName?: string) {
+  return buildUniqueFileName(uploadsDir, rawName, extension, currentFileName)
+}
+
+function buildUniqueTemplateFileName(rawName: string, extension: string, currentFileName?: string) {
+  return buildUniqueFileName(buildingTemplatesDir, rawName, extension, currentFileName)
 }
 
 function getImageDisplayName(fileName: string) {
@@ -504,7 +538,7 @@ function getImageDisplayName(fileName: string) {
 }
 
 function formatTemplateName(fileName: string) {
-  return getImageDisplayName(fileName).replace(/_/g, ' ').trim()
+  return getImageDisplayName(fileName).trim()
 }
 
 function toUploadedImage(fileName: string): UploadedImage {
@@ -527,23 +561,43 @@ function listBuildingTemplates(): BuildingTemplate[] {
     return []
   }
 
+  const templateSettings = new Map(
+    (listTemplateSettingsStatement.all() as Array<{ fileName: string; showOnHome: number }>).map((row) => [
+      row.fileName,
+      row.showOnHome !== 0,
+    ]),
+  )
+
+  const preferredTemplateOrder = new Map([
+    ['fr2office', 10],
+    ['fr2logistic', 20],
+    ['fr2phase12', 30],
+    ['fr2phase34', 40],
+    ['fr2phase25', 50],
+    ['fr2phase26', 60],
+  ])
+
   return readdirSync(buildingTemplatesDir)
     .filter((fileName) => supportedImageExtensions.has(path.extname(fileName).toLowerCase()))
-    .sort((left, right) => left.localeCompare(right))
-    .map((fileName) => {
-      const name = formatTemplateName(fileName)
+    .sort((left, right) => {
+      const leftKey = normalizeTemplateName(left)
+      const rightKey = normalizeTemplateName(right)
+      const leftRank = preferredTemplateOrder.get(leftKey) ?? Number.MAX_SAFE_INTEGER
+      const rightRank = preferredTemplateOrder.get(rightKey) ?? Number.MAX_SAFE_INTEGER
 
-      return {
-        fileName,
-        name,
-        building: name,
-        path: `/building-templates/${encodeURIComponent(fileName)}`,
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank
       }
+
+      return left.localeCompare(right)
     })
+    .map((fileName) => withBuildingTemplateSettings(toBuildingTemplate(fileName), templateSettings))
 }
 
 function listPublicBuildingTemplates(): BuildingTemplate[] {
-  return listBuildingTemplates().filter((template) => normalizeTemplateName(template.fileName) !== 'fr2grundriss')
+  return listBuildingTemplates().filter(
+    (template) => template.showOnHome && normalizeTemplateName(template.fileName) !== 'fr2grundriss',
+  )
 }
 
 function normalizeTemplateName(value: string) {
@@ -573,6 +627,75 @@ function renameImageFile(fileName: string, name: string) {
   return toUploadedImage(targetFileName)
 }
 
+function toBuildingTemplate(fileName: string): BuildingTemplate {
+  const name = formatTemplateName(fileName)
+
+  return {
+    fileName,
+    name,
+    building: name,
+    path: `/building-templates/${encodeURIComponent(fileName)}`,
+    showOnHome: true,
+  }
+}
+
+function withBuildingTemplateSettings(
+  template: BuildingTemplate,
+  templateSettings: Map<string, boolean>,
+): BuildingTemplate {
+  return {
+    ...template,
+    showOnHome: templateSettings.get(template.fileName) ?? true,
+  }
+}
+
+function renameBuildingTemplateFile(fileName: string, name: string) {
+  const sourceFile = path.basename(fileName)
+  const sourcePath = path.join(buildingTemplatesDir, sourceFile)
+
+  if (!existsSync(sourcePath)) {
+    throw new Error('Building template not found.')
+  }
+
+  const extension = path.extname(sourceFile).toLowerCase()
+  const targetFileName = buildUniqueTemplateFileName(name, extension, sourceFile)
+
+  if (targetFileName !== sourceFile) {
+    renameSync(sourcePath, path.join(buildingTemplatesDir, targetFileName))
+    renameTemplateSettingsStatement.run(targetFileName, sourceFile)
+    updateRoomImageStatement.run(
+      `/building-templates/${encodeURIComponent(targetFileName)}`,
+      `/building-templates/${encodeURIComponent(sourceFile)}`,
+    )
+  }
+
+  return toBuildingTemplate(targetFileName)
+}
+
+function deleteBuildingTemplateFile(fileName: string) {
+  const sourceFile = path.basename(fileName)
+  const sourcePath = path.join(buildingTemplatesDir, sourceFile)
+
+  if (!existsSync(sourcePath)) {
+    throw new Error('Building template not found.')
+  }
+
+  unlinkSync(sourcePath)
+  deleteTemplateSettingsStatement.run(sourceFile)
+  clearRoomImageStatement.run('', `/building-templates/${encodeURIComponent(sourceFile)}`)
+}
+
+function updateBuildingTemplateVisibility(fileName: string, showOnHome: boolean) {
+  const sourceFile = path.basename(fileName)
+  const sourcePath = path.join(buildingTemplatesDir, sourceFile)
+
+  if (!existsSync(sourcePath)) {
+    throw new Error('Building template not found.')
+  }
+
+  upsertTemplateVisibilityStatement.run(sourceFile, showOnHome ? 1 : 0)
+}
+
 ensureLegacyImport()
 
 if (adminPassword === 'change-me') {
@@ -589,6 +712,25 @@ const upload = multer({
       const extension = getUploadExtension(file)
       const originalBaseName = path.basename(file.originalname, path.extname(file.originalname))
       callback(null, buildUniqueImageFileName(originalBaseName, extension || '.bin'))
+    },
+  }),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 50,
+  },
+  fileFilter: (_req, file, callback) => {
+    callback(null, file.mimetype.startsWith('image/'))
+  },
+})
+const templateUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, callback) => {
+      callback(null, buildingTemplatesDir)
+    },
+    filename: (_req, file, callback) => {
+      const extension = getUploadExtension(file)
+      const originalBaseName = path.basename(file.originalname, path.extname(file.originalname))
+      callback(null, buildUniqueTemplateFileName(originalBaseName, extension || '.bin'))
     },
   }),
   limits: {
@@ -790,6 +932,81 @@ app.get('/api/admin/images', requireAdmin, (req, res) => {
 
 app.get('/api/admin/building-templates', requireAdmin, (_req, res) => {
   res.json(listBuildingTemplates())
+})
+
+app.post('/api/admin/building-templates', requireAdmin, templateUpload.array('templates', 50), (req, res) => {
+  const files = (req.files ?? []) as Express.Multer.File[]
+
+  if (files.length === 0) {
+    res.status(400).json({ error: 'No valid building templates uploaded.' })
+    return
+  }
+
+  res.status(201).json({
+    uploaded: files.map((file) => toBuildingTemplate(file.filename)),
+  })
+})
+
+app.patch('/api/admin/building-templates/:fileName', requireAdmin, (req, res) => {
+  const payload = renameImageSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  try {
+    const template = renameBuildingTemplateFile(String(req.params.fileName ?? ''), payload.data.name)
+    res.json({ ok: true, template })
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(404).json({ error: error.message })
+      return
+    }
+
+    throw error
+  }
+})
+
+app.patch('/api/admin/building-templates/:fileName/visibility', requireAdmin, (req, res) => {
+  const fileName = String(req.params.fileName ?? '')
+  const payload = buildingTemplateVisibilitySchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  try {
+    updateBuildingTemplateVisibility(fileName, payload.data.showOnHome)
+    const template = listBuildingTemplates().find((entry) => entry.fileName === path.basename(fileName))
+
+    if (!template) {
+      res.status(404).json({ error: 'Building template not found.' })
+      return
+    }
+
+    res.json({ ok: true, template })
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(404).json({ error: error.message })
+      return
+    }
+
+    throw error
+  }
+})
+
+app.delete('/api/admin/building-templates/:fileName', requireAdmin, (req, res) => {
+  try {
+    deleteBuildingTemplateFile(String(req.params.fileName ?? ''))
+    res.json({ ok: true })
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(404).json({ error: error.message })
+      return
+    }
+
+    throw error
+  }
 })
 
 app.patch('/api/admin/images/:fileName', requireAdmin, (req, res) => {

@@ -1,0 +1,18 @@
+Bitte lies zuerst nur diese Datei und arbeite danach:
+
+app-builder-kit/DIESE-DATEI-ZUERST-LESEN.de.md
+
+Falls du mehr Details brauchst, kannst du danach weitere Dateien aus app-builder-kit lesen.
+
+Wichtig fuer deine Arbeitsweise:
+- Dieser Ordner ist AI-neutral und lokal.
+- Keine Installation oder Plugins voraussetzen.
+- Nicht sofort implementieren.
+- Erst Problemverstaendnis und sinnvollen Ansatz aufbauen.
+- Bei neuer App zuerst Brief und Plan.
+- Bei bestehender App zuerst aktuelle Struktur analysieren.
+- UI bewusst gestalten, nicht generisch.
+- Klein, sauber und pruefbar umsetzen.
+
+Meine Aufgabe:
+[HIER DEIN ZIEL EINFUEGEN]

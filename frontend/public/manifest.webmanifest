@@ -3,7 +3,7 @@
   "short_name": "PATHFINDER",
   "start_url": "/",
   "display": "fullscreen",
-  "orientation": "portrait",
+  "orientation": "landscape",
   "background_color": "#ffffff",
   "theme_color": "#111827",
   "icons": [

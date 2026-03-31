@@ -34,6 +34,7 @@ export type BuildingTemplate = {
   name: string
   building: string
   path: string
+  showOnHome: boolean
 }
 
 export type UploadedImagePage = {

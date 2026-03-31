@@ -43,6 +43,14 @@ body {
     linear-gradient(180deg, #ffffff 0%, #edf2f7 100%);
 }
 
+body.admin-mode {
+  color: #e5eefb;
+  background:
+    radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(99, 102, 241, 0.18), transparent 24%),
+    linear-gradient(180deg, #050816 0%, #0a1022 42%, #0d1328 100%);
+}
+
 body.kiosk-mode {
   overflow: hidden;
   overscroll-behavior: none;

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  deleteBuildingTemplate,
   deleteRoom,
   getAdminSession,
   getBuildingTemplates,
@@ -12,15 +13,28 @@ import {
   importRooms,
   login,
   logout,
+  renameBuildingTemplate,
   renameImage,
   resolveAssetUrl,
   saveRoom,
   searchRoom,
+  setBuildingTemplateVisibility,
   sendFeedback,
+  uploadBuildingTemplates,
   uploadImages,
 } from './api'
 import './App.css'
 import type { BuildingTemplate, FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
+
+type WakeLockSentinelLike = {
+  release: () => Promise<void>
+}
+
+type WakeLockNavigator = Navigator & {
+  wakeLock?: {
+    request: (type: 'screen') => Promise<WakeLockSentinelLike>
+  }
+}
 
 type RoomForm = {
   usid: string
@@ -164,6 +178,11 @@ function normalizeTemplateLookup(value: string) {
 
 const kioskDigits = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const
 
+function isLikelyIpadDevice() {
+  const userAgent = navigator.userAgent
+  return /iPad/i.test(userAgent) || (/Macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1)
+}
+
 function KioskApp() {
   const [input, setInput] = useState('')
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null)
@@ -186,6 +205,41 @@ function KioskApp() {
 
     return () => {
       document.body.classList.remove('kiosk-mode')
+    }
+  }, [])
+
+  useEffect(() => {
+    const wakeLockNavigator = navigator as WakeLockNavigator
+    let wakeLock: WakeLockSentinelLike | null = null
+    let cancelled = false
+
+    async function requestWakeLock() {
+      if (!wakeLockNavigator.wakeLock || document.visibilityState !== 'visible') {
+        return
+      }
+
+      try {
+        wakeLock = await wakeLockNavigator.wakeLock.request('screen')
+      } catch {
+        wakeLock = null
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (!cancelled) {
+        void requestWakeLock()
+      }
+    }
+
+    void requestWakeLock()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      if (wakeLock) {
+        void wakeLock.release()
+      }
     }
   }, [])
 
@@ -345,8 +399,14 @@ function KioskApp() {
       {!selectedRoom && !selectedTemplate ? (
         <section className="kiosk-home">
           <div className="kiosk-home-content">
-            <img src="/logo.jpg" className="brand-logo" alt="Pathfinder logo" />
-            <img src="/header.jpg" className="hero-image" alt="Office directions" />
+            <div className="kiosk-top-row">
+              <div className="brand-strip" aria-label="Pathfinder and Equinix branding">
+                <img src="/logo.jpg" className="brand-logo" alt="Pathfinder logo" />
+                <span className="brand-separator" aria-hidden="true" />
+                <div className="partner-wordmark" aria-label="Equinix">EQUINIX</div>
+              </div>
+              <img src="/header.jpg" className="hero-image" alt="Office directions" />
+            </div>
             <p className="search-label">Enter the last six digits of your USID.</p>
 
             <div className="search-area">
@@ -535,7 +595,9 @@ function AdminApp() {
   const [imageQuery, setImageQuery] = useState('')
   const [imagePage, setImagePage] = useState(1)
   const [imageRenameDrafts, setImageRenameDrafts] = useState<Record<string, string>>({})
+  const [templateRenameDrafts, setTemplateRenameDrafts] = useState<Record<string, string>>({})
   const [isUploadingImages, setIsUploadingImages] = useState(false)
+  const [isUploadingTemplates, setIsUploadingTemplates] = useState(false)
   const [roomView, setRoomView] = useState<'grid' | 'table'>('table')
 
   useEffect(() => {
@@ -550,6 +612,14 @@ function AdminApp() {
   }, [])
 
   useEffect(() => {
+    document.body.classList.add('admin-mode')
+
+    return () => {
+      document.body.classList.remove('admin-mode')
+    }
+  }, [])
+
+  useEffect(() => {
     if (!authenticated) {
       return
     }
@@ -560,6 +630,13 @@ function AdminApp() {
         setFeedback(feedbackResponse)
         setReport(reportResponse)
         setBuildingTemplates(templateResponse)
+        setTemplateRenameDrafts((current) => {
+          const nextDrafts = { ...current }
+          for (const template of templateResponse) {
+            nextDrafts[template.fileName] ??= template.name
+          }
+          return nextDrafts
+        })
       })
       .catch((error) => {
         setStatusNotice({
@@ -642,6 +719,8 @@ function AdminApp() {
   const totalSearches = report.reduce((sum, entry) => sum + entry.searches, 0)
   const totalPositive = feedback.filter((entry) => entry.rating === 'up').length
   const totalNegative = feedback.filter((entry) => entry.rating === 'down').length
+  const visibleTemplateCount = buildingTemplates.filter((template) => template.showOnHome).length
+  const hiddenTemplateCount = buildingTemplates.length - visibleTemplateCount
   const topSearch = report.reduce<ReportEntry | null>((currentTop, entry) => {
     if (!currentTop || entry.searches > currentTop.searches) {
       return entry
@@ -664,6 +743,25 @@ function AdminApp() {
     setRooms(roomsResponse)
     setFeedback(feedbackResponse)
     setReport(reportResponse)
+  }
+
+  async function refreshBuildingTemplates() {
+    const templates = await getBuildingTemplates()
+    setBuildingTemplates(templates)
+    setTemplateRenameDrafts((current) => {
+      const nextDrafts = { ...current }
+      for (const template of templates) {
+        nextDrafts[template.fileName] = nextDrafts[template.fileName] ?? template.name
+      }
+
+      for (const fileName of Object.keys(nextDrafts)) {
+        if (!templates.some((template) => template.fileName === fileName)) {
+          delete nextDrafts[fileName]
+        }
+      }
+
+      return nextDrafts
+    })
   }
 
   async function refreshImages(page = imagePage, query = imageQuery) {
@@ -697,6 +795,7 @@ function AdminApp() {
     setBuildingTemplates([])
     setImagePageData(createEmptyImagePage())
     setImageRenameDrafts({})
+    setTemplateRenameDrafts({})
   }
 
   async function handleSaveRoom() {
@@ -785,6 +884,37 @@ function AdminApp() {
     }
   }
 
+  async function handleTemplateUpload(files: FileList | null) {
+    const selectedFiles = Array.from(files ?? [])
+    if (selectedFiles.length === 0) {
+      return
+    }
+
+    try {
+      setIsUploadingTemplates(true)
+      const result = await uploadBuildingTemplates(selectedFiles)
+      if (result.uploaded[0]) {
+        setRoomForm((current) => ({
+          ...current,
+          building: current.building || result.uploaded[0].building,
+          image: result.uploaded[0].path,
+        }))
+      }
+      setStatusNotice({
+        tone: 'success',
+        message: `${result.uploaded.length} building template(s) uploaded.`,
+      })
+      await refreshBuildingTemplates()
+    } catch (error) {
+      setStatusNotice({
+        tone: 'error',
+        message: getErrorMessage(error, 'Building template upload failed.'),
+      })
+    } finally {
+      setIsUploadingTemplates(false)
+    }
+  }
+
   async function handleRenameImage(image: UploadedImage) {
     const nextName = (imageRenameDrafts[image.fileName] ?? '').trim()
     if (!nextName) {
@@ -803,6 +933,72 @@ function AdminApp() {
       setStatusNotice({
         tone: 'error',
         message: getErrorMessage(error, 'Image could not be renamed.'),
+      })
+    }
+  }
+
+  async function handleRenameBuildingTemplate(template: BuildingTemplate) {
+    const nextName = (templateRenameDrafts[template.fileName] ?? '').trim()
+    if (!nextName) {
+      setStatusNotice({ tone: 'info', message: 'Template name cannot be empty.' })
+      return
+    }
+
+    try {
+      const result = await renameBuildingTemplate(template.fileName, nextName)
+      if (roomForm.image === template.path) {
+        setRoomForm((current) => ({
+          ...current,
+          building: current.building || result.template.building,
+          image: result.template.path,
+        }))
+      }
+      setStatusNotice({ tone: 'success', message: `Building template renamed to ${result.template.building}.` })
+      await refreshBuildingTemplates()
+    } catch (error) {
+      setStatusNotice({
+        tone: 'error',
+        message: getErrorMessage(error, 'Building template could not be renamed.'),
+      })
+    }
+  }
+
+  async function handleDeleteBuildingTemplate(template: BuildingTemplate) {
+    if (!window.confirm(`Delete building template ${template.building}? This cannot be undone.`)) {
+      return
+    }
+
+    try {
+      await deleteBuildingTemplate(template.fileName)
+      if (roomForm.image === template.path) {
+        setRoomForm((current) => ({ ...current, image: '' }))
+      }
+      setStatusNotice({ tone: 'success', message: `Building template ${template.building} deleted.` })
+      await refreshBuildingTemplates()
+    } catch (error) {
+      setStatusNotice({
+        tone: 'error',
+        message: getErrorMessage(error, 'Building template could not be deleted.'),
+      })
+    }
+  }
+
+  async function handleToggleBuildingTemplateVisibility(template: BuildingTemplate, showOnHome: boolean) {
+    try {
+      const result = await setBuildingTemplateVisibility(template.fileName, showOnHome)
+      setBuildingTemplates((current) =>
+        current.map((entry) => (entry.fileName === template.fileName ? result.template : entry)),
+      )
+      setStatusNotice({
+        tone: 'success',
+        message: showOnHome
+          ? `Building template ${template.building} is now visible on the start screen.`
+          : `Building template ${template.building} is now hidden from the start screen.`,
+      })
+    } catch (error) {
+      setStatusNotice({
+        tone: 'error',
+        message: getErrorMessage(error, 'Building template visibility could not be updated.'),
       })
     }
   }
@@ -831,25 +1027,71 @@ function AdminApp() {
   if (!authenticated) {
     return (
       <main className="admin-login-shell">
-        <section className="admin-login-card">
-          <h1>PATHFINDER Admin Panel</h1>
-          <p>Remote access for room management, image uploads and exports.</p>
-          <input
-            className="admin-password"
-            type="password"
-            placeholder="Admin password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                void handleLogin()
-              }
-            }}
-          />
-          <button className="primary-button" onClick={() => void handleLogin()}>
-            Login
-          </button>
-          {loginError ? <p className="error-message centered">{loginError}</p> : null}
+        <section className="admin-login-stage">
+          <aside className="admin-login-showcase">
+            <span className="admin-eyebrow">PATHFINDER // CONTROL</span>
+            <h1>Operate rooms, floor plans and media from one focused command layer.</h1>
+            <p>
+              A high-contrast admin workspace for room updates, template visibility, image curation and live
+              operational reporting.
+            </p>
+
+            <div className="admin-login-feature-list">
+              <article className="admin-feature-card">
+                <span>Templates</span>
+                <strong>Control which plans appear on the kiosk start screen.</strong>
+              </article>
+              <article className="admin-feature-card">
+                <span>Media</span>
+                <strong>Upload, rename and assign images without leaving the dashboard.</strong>
+              </article>
+              <article className="admin-feature-card">
+                <span>Reporting</span>
+                <strong>Track searches, feedback and exports from a single operational surface.</strong>
+              </article>
+            </div>
+
+            <div className="admin-login-pulse-card" aria-hidden="true">
+              <span className="pulse-dot" />
+              <div>
+                <strong>Dark mode operations console</strong>
+                <span>Built for fast scanning, clear hierarchy and high-signal actions.</span>
+              </div>
+            </div>
+          </aside>
+
+          <section className="admin-login-card">
+            <span className="admin-eyebrow">Secure Access</span>
+            <h2>Admin Login</h2>
+            <p>Authenticate to enter the command center for Pathfinder operations.</p>
+
+            <label className="admin-field">
+              <span>Password</span>
+              <input
+                className="admin-password"
+                type="password"
+                placeholder="Enter admin password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    void handleLogin()
+                  }
+                }}
+              />
+            </label>
+
+            <button className="primary-button" onClick={() => void handleLogin()}>
+              Enter command center
+            </button>
+
+            <div className="admin-login-meta">
+              <span>Protected admin route</span>
+              <span>Room, template and report access</span>
+            </div>
+
+            {loginError ? <p className="error-message centered">{loginError}</p> : null}
+          </section>
         </section>
       </main>
     )
@@ -857,17 +1099,41 @@ function AdminApp() {
 
   return (
     <main className="admin-shell">
-      <header className="admin-header">
-        <div>
-          <h1>PATHFINDER Admin Panel</h1>
-          <p>Manage rooms, imports, images and operational feedback from one place.</p>
-        </div>
-        <button className="secondary-button" onClick={() => void handleLogout()}>
-          Logout
-        </button>
-      </header>
+      <section className="admin-hero">
+        <header className="admin-header admin-card emphasis-card">
+          <div className="admin-header-copy">
+            <span className="admin-eyebrow">Operations Dashboard</span>
+            <h1>PATHFINDER Command Center</h1>
+            <p>Manage rooms, imports, images and operational feedback from one dark-mode control surface.</p>
+          </div>
 
-      {statusNotice ? <p className={`status-message is-${statusNotice.tone}`}>{statusNotice.message}</p> : null}
+          <div className="admin-hero-metrics" aria-label="Operational highlights">
+            <article className="admin-hero-metric">
+              <span>Visible templates</span>
+              <strong>{visibleTemplateCount}</strong>
+            </article>
+            <article className="admin-hero-metric">
+              <span>Hidden templates</span>
+              <strong>{hiddenTemplateCount}</strong>
+            </article>
+            <article className="admin-hero-metric">
+              <span>Loaded images</span>
+              <strong>{imagePageData.total}</strong>
+            </article>
+          </div>
+        </header>
+
+        <aside className="admin-side-panel admin-card">
+          <span className="admin-eyebrow">Session</span>
+          <strong>Admin online</strong>
+          <p>{lastActivity ? `Latest activity ${formatDate(lastActivity)}` : 'No recent activity recorded yet.'}</p>
+          <button className="secondary-button" onClick={() => void handleLogout()}>
+            Logout
+          </button>
+        </aside>
+      </section>
+
+      {statusNotice ? <p className={`status-message admin-status-banner is-${statusNotice.tone}`}>{statusNotice.message}</p> : null}
 
       <section className="stats-grid">
         <article className="stat-card emphasis-card">
@@ -916,7 +1182,22 @@ function AdminApp() {
                     : 'Choose one of the saved floor plan templates.'}
                 </p>
               </div>
-              <span className="template-count">{matchingBuildingTemplates.length} available</span>
+              <div className="template-panel-actions">
+                <span className="template-count">{matchingBuildingTemplates.length} available</span>
+                <label className="upload-button compact">
+                  {isUploadingTemplates ? 'Uploading...' : 'Upload templates'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    hidden
+                    onChange={(event) => {
+                      void handleTemplateUpload(event.target.files)
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                </label>
+              </div>
             </div>
 
             {matchingBuildingTemplates.length > 0 ? (
@@ -931,17 +1212,43 @@ function AdminApp() {
                       <strong>{template.building}</strong>
                       <span>{template.fileName}</span>
                     </div>
-                    <button
-                      className="secondary-button compact"
-                      onClick={() => handleUseBuildingTemplate(template)}
-                    >
-                      Use template
-                    </button>
+                    <label className="template-visibility-toggle">
+                      <input
+                        type="checkbox"
+                        checked={template.showOnHome}
+                        onChange={(event) => {
+                          void handleToggleBuildingTemplateVisibility(template, event.target.checked)
+                        }}
+                      />
+                      Show on start screen
+                    </label>
+                    <input
+                      value={templateRenameDrafts[template.fileName] ?? template.name}
+                      onChange={(event) => {
+                        const nextValue = event.target.value
+                        setTemplateRenameDrafts((current) => ({ ...current, [template.fileName]: nextValue }))
+                      }}
+                      placeholder="Rename template"
+                    />
+                    <div className="button-row template-card-actions">
+                      <button
+                        className="secondary-button compact"
+                        onClick={() => handleUseBuildingTemplate(template)}
+                      >
+                        Use template
+                      </button>
+                      <button className="primary-button compact" onClick={() => void handleRenameBuildingTemplate(template)}>
+                        Rename
+                      </button>
+                      <button className="danger-button compact" onClick={() => void handleDeleteBuildingTemplate(template)}>
+                        Delete
+                      </button>
+                    </div>
                   </article>
                 ))}
               </div>
             ) : (
-              <p className="muted-text">Add a building name or place more template files in FR2_Grundriss.</p>
+              <p className="muted-text">Upload a new template here or add a building name to narrow existing matches.</p>
             )}
           </div>
           {roomForm.image ? (
@@ -1248,8 +1555,22 @@ function AdminApp() {
   )
 }
 
+function AdminAccessRedirect() {
+  useEffect(() => {
+    window.location.replace('/')
+  }, [])
+
+  return null
+}
+
 function App() {
   const isAdminRoute = window.location.pathname.startsWith('/admin')
+  const blockAdminOnDevice = isAdminRoute && isLikelyIpadDevice()
+
+  if (blockAdminOnDevice) {
+    return <AdminAccessRedirect />
+  }
+
   return isAdminRoute ? <AdminApp /> : <KioskApp />
 }
 

@@ -23,7 +23,7 @@ COPY backend/package.json ./backend/package.json
 COPY frontend/package.json ./frontend/package.json
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY --from=build /app/backend/dist ./dist
+COPY --from=build /app/backend/dist ./backend/dist
 COPY backend/FR2_Grundriss ./FR2_Grundriss
 COPY backend/FR2_Grundriss ./default-building-templates
 
@@ -31,4 +31,4 @@ RUN mkdir -p /app/data /app/uploads
 
 EXPOSE 3000
 
-CMD ["node", "dist/server.js"]
+CMD ["node", "backend/dist/server.js"]

@@ -169,10 +169,20 @@ async function parseImportWorkbook(file: File): Promise<Room[]> {
   return rows
     .map((row) => {
       const values = Object.fromEntries(
-        headers.map((header: string, index: number) => [header, String(row.getCell(index + 1).text ?? '').trim()]),
+        headers.map((header: string, index: number) => {
+          const cell = row.getCell(index + 1)
+          // Use raw numeric value so we can zero-pad USIDs that Excel stored as numbers
+          const rawValue = typeof cell.value === 'number'
+            ? String(Math.round(cell.value))
+            : String(cell.text ?? '').trim()
+          return [header, rawValue]
+        }),
       )
+      // Zero-pad USID to 6 digits if Excel stripped leading zeros (stored as number)
+      const rawUsid = values.usid ?? ''
+      const usid = /^\d{1,5}$/.test(rawUsid) ? rawUsid.padStart(6, '0') : rawUsid
       return {
-        usid: values.usid ?? '',
+        usid,
         building: values.building ?? '',
         level: values.level ?? '',
         room: values.room ?? '',

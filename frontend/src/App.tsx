@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import SplashScreen from './SplashScreen'
 import {
   deleteBuildingTemplate,
+  deleteImage,
   deleteRoom,
   getAdminSession,
   getBuildingTemplates,
@@ -53,6 +55,12 @@ type RoomForm = {
 type StatusNotice = {
   tone: 'success' | 'error' | 'info'
   message: string
+}
+
+type UploadProgressState = {
+  uploadedFiles: number
+  totalFiles: number
+  percent: number
 }
 
 const emptyRoom: RoomForm = {
@@ -199,9 +207,26 @@ function formatRelativeCount(value: number, singular: string, plural: string) {
 function normalizeTemplateLookup(value: string) {
   return value
     .normalize('NFKD')
-    .replace(/[^\x00-\x7F]/g, '')
+    .split('')
+    .filter((character) => character.charCodeAt(0) <= 0x7f)
+    .join('')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '')
+}
+
+function getAssetFileName(path: string) {
+  const rawFileName = path.split('/').filter(Boolean).pop() ?? path
+
+  try {
+    return decodeURIComponent(rawFileName)
+  } catch {
+    return rawFileName
+  }
+}
+
+function getAssetDisplayName(path: string) {
+  const fileName = getAssetFileName(path)
+  return fileName.replace(/\.[^.]+$/, '') || fileName || path
 }
 
 const kioskDigits = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const
@@ -622,6 +647,7 @@ function KioskApp() {
 }
 
 function AdminApp() {
+  const [showSplash, setShowSplash] = useState(true);
   const [adminTheme, setAdminTheme] = useState<AdminTheme>(() => {
     if (typeof window === 'undefined') {
       return 'dark'
@@ -642,7 +668,9 @@ function AdminApp() {
   const [buildingTemplates, setBuildingTemplates] = useState<BuildingTemplate[]>([])
   const [imageQuery, setImageQuery] = useState('')
   const [imagePage, setImagePage] = useState(1)
+  const [showRoomImagePicker, setShowRoomImagePicker] = useState(false)
   const [imageRenameDrafts, setImageRenameDrafts] = useState<Record<string, string>>({})
+  const [imageUploadProgress, setImageUploadProgress] = useState<UploadProgressState | null>(null)
 
   useEffect(() => {
     if (!statusNotice) return
@@ -804,6 +832,44 @@ function AdminApp() {
       .map((entry) => entry.template)
   }, [buildingTemplates, roomForm.building])
 
+  const selectedRoomTemplate = useMemo(
+    () => buildingTemplates.find((template) => template.path === roomForm.image) ?? null,
+    [buildingTemplates, roomForm.image],
+  )
+
+  const selectedRoomAsset = useMemo(() => {
+    if (!roomForm.image) {
+      return null
+    }
+
+    const selectedImage = imagePageData.items.find((image) => image.path === roomForm.image)
+    if (selectedImage) {
+      return {
+        title: selectedImage.name,
+        subtitle: selectedImage.fileName,
+        source: 'Image library',
+      }
+    }
+
+    if (selectedRoomTemplate) {
+      return {
+        title: selectedRoomTemplate.building,
+        subtitle: selectedRoomTemplate.fileName,
+        source: 'Building template',
+      }
+    }
+
+    const fileName = getAssetFileName(roomForm.image)
+
+    return {
+      title: getAssetDisplayName(roomForm.image),
+      subtitle: fileName,
+      source: 'Stored file',
+    }
+  }, [imagePageData.items, roomForm.image, selectedRoomTemplate])
+
+  const roomImagePickerItems = useMemo(() => imagePageData.items.slice(0, 8), [imagePageData.items])
+
   const totalSearches = report.reduce((sum, entry) => sum + entry.searches, 0)
   const averageRating = feedback.length > 0 ? (feedback.reduce((sum, entry) => sum + entry.rating, 0) / feedback.length).toFixed(1) : '–'
   const visibleTemplateCount = buildingTemplates.filter((template) => template.showOnHome).length
@@ -953,7 +1019,16 @@ function AdminApp() {
 
     try {
       setIsUploadingImages(true)
-      const result = await uploadImages(selectedFiles)
+      setImageUploadProgress({
+        uploadedFiles: 0,
+        totalFiles: selectedFiles.length,
+        percent: 0,
+      })
+      const result = await uploadImages(selectedFiles, {
+        onProgress: (progress) => {
+          setImageUploadProgress(progress)
+        },
+      })
       if (result.uploaded[0]) {
         setRoomForm((current) => ({ ...current, image: result.uploaded[0].path }))
       }
@@ -970,6 +1045,7 @@ function AdminApp() {
       })
     } finally {
       setIsUploadingImages(false)
+      setImageUploadProgress(null)
     }
   }
 
@@ -1052,6 +1128,27 @@ function AdminApp() {
     }
   }
 
+  async function handleDeleteImage(image: UploadedImage) {
+    const confirmed = await showConfirmModal('Delete Image', `Delete image "${image.name}"? This cannot be undone.`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await deleteImage(image.fileName)
+      if (roomForm.image === image.path) {
+        setRoomForm((current) => ({ ...current, image: '' }))
+      }
+      setStatusNotice({ tone: 'success', message: `Image "${image.name}" deleted.` })
+      await Promise.all([refreshRoomsAndFeedback(), refreshImages(imagePage, imageQuery)])
+    } catch (error) {
+      setStatusNotice({
+        tone: 'error',
+        message: getErrorMessage(error, 'Image could not be deleted.'),
+      })
+    }
+  }
+
   async function handleDeleteBuildingTemplate(template: BuildingTemplate) {
     const confirmed = await showConfirmModal('Delete Template', `Delete building template ${template.building}? This cannot be undone.`)
     if (!confirmed) {
@@ -1105,6 +1202,27 @@ function AdminApp() {
     }
   }
 
+  function handleSelectRoomImage(image: UploadedImage) {
+    setRoomForm((current) => ({ ...current, image: image.path }))
+    setShowRoomImagePicker(false)
+    setStatusNotice({ tone: 'info', message: `Image ${image.name} selected for room.` })
+  }
+
+  function handleClearRoomImage() {
+    setRoomForm((current) => {
+      const shouldClearBuilding =
+        selectedRoomTemplate !== null &&
+        normalizeTemplateLookup(current.building) === normalizeTemplateLookup(selectedRoomTemplate.building)
+
+      return {
+        ...current,
+        image: '',
+        building: shouldClearBuilding ? '' : current.building,
+      }
+    })
+    setStatusNotice({ tone: 'info', message: 'Room image cleared.' })
+  }
+
   function handleUseBuildingTemplate(template: BuildingTemplate) {
     setRoomForm((current) => ({
       ...current,
@@ -1115,77 +1233,159 @@ function AdminApp() {
     setStatusNotice({ tone: 'info', message: `Building template ${template.building} selected.` })
   }
 
+  if (showSplash) {
+    return <SplashScreen onFinished={() => setShowSplash(false)} />;
+  }
+
   if (!authenticated) {
     return (
       <main className="admin-login-shell" data-admin-theme={adminTheme}>
         <section className="admin-login-stage">
           <aside className="admin-login-showcase">
+            <div className="admin-login-showcase-glow" aria-hidden="true" />
+
+            <div className="admin-login-showcase-top">
+              <div className="admin-login-brand">
+                <img src="/admin-monitor-logo.svg" className="admin-login-brand-logo" alt="" />
+                <div className="admin-login-brand-copy">
+                  <span>Pathfinder route intelligence</span>
+                  <strong>Control layer</strong>
+                </div>
+              </div>
+
+              <div className="admin-login-status-chip">
+                <span className="admin-login-status-dot" aria-hidden="true" />
+                <span>Route graph online</span>
+              </div>
+            </div>
+
             <span className="admin-eyebrow">PATHFINDER // CONTROL</span>
-            <h1>Operate rooms, floor plans and media from one focused command layer.</h1>
+            <h1>Direct rooms, plans and media from one focused command layer.</h1>
             <p>
-              A high-contrast admin workspace for room updates, template visibility, image curation and live
-              operational reporting.
+              A clear admin entry point for room updates, template visibility and operational reporting.
             </p>
+
+            <div className="admin-login-route-tags" aria-label="Pathfinder capabilities">
+              {['Rooms', 'Templates', 'Reports'].map((tag) => (
+                <span key={tag} className="admin-login-route-tag">
+                  {tag}
+                </span>
+              ))}
+            </div>
+
+            <div className="admin-login-visual" aria-hidden="true">
+              <img src="/DLevel1.jpg" className="admin-login-visual-image" alt="" />
+              <div className="admin-login-visual-grid" />
+              <div className="admin-login-visual-vignette" />
+              <span className="admin-login-visual-scan" />
+              <span className="admin-login-visual-route admin-login-visual-route--one" />
+              <span className="admin-login-visual-route admin-login-visual-route--two" />
+              <span className="admin-login-visual-route admin-login-visual-route--three" />
+              <span className="admin-login-visual-node admin-login-visual-node--start" />
+              <span className="admin-login-visual-node admin-login-visual-node--mid" />
+              <span className="admin-login-visual-node admin-login-visual-node--target" />
+
+              <div className="admin-login-visual-card admin-login-visual-card--left">
+                <span>Route preview</span>
+                <strong>Navigation stays aligned from entry point to destination.</strong>
+              </div>
+            </div>
 
             <div className="admin-login-feature-list">
               <article className="admin-feature-card">
                 <span>Templates</span>
-                <strong>Control which plans appear on the kiosk start screen.</strong>
+                <strong>Choose which plans appear on the kiosk.</strong>
               </article>
               <article className="admin-feature-card">
                 <span>Media</span>
-                <strong>Upload, rename and assign images without leaving the dashboard.</strong>
+                <strong>Manage uploads and assignments in one place.</strong>
               </article>
               <article className="admin-feature-card">
                 <span>Reporting</span>
-                <strong>Track searches, feedback and exports from a single operational surface.</strong>
+                <strong>Review searches, feedback and exports quickly.</strong>
               </article>
-            </div>
-
-            <div className="admin-login-pulse-card" aria-hidden="true">
-              <span className="pulse-dot" />
-              <div>
-                <strong>Operations console with theme toggle</strong>
-                <span>Dark by default, with an optional light view when you want it.</span>
-              </div>
             </div>
           </aside>
 
-          <section className="admin-login-card">
-            <span className="admin-eyebrow">Secure Access</span>
-            <h2>Admin Login</h2>
+          <section className={`admin-login-card ${loginError ? 'is-error' : ''}`}>
+            <div className="admin-login-card-head">
+              <div>
+                <span className="admin-eyebrow">Secure Access</span>
+                <h2>Admin Login</h2>
+              </div>
+
+              <span className="admin-login-card-badge">Route Ops</span>
+            </div>
+
             <p>Authenticate to enter the command center for Pathfinder operations.</p>
 
-            <label className="admin-field">
+            <div className="admin-login-signal-row" aria-hidden="true">
+              <span className="admin-login-signal-pill">Spatial auth</span>
+              <span className="admin-login-signal-pill">Template control</span>
+              <span className="admin-login-signal-pill">Live reporting</span>
+            </div>
+
+            <label className={`admin-field ${loginError ? 'is-error' : ''}`}>
               <span>Password</span>
-              <input
-                className="admin-password"
-                type="password"
-                placeholder="Enter admin password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    void handleLogin()
-                  }
-                }}
-              />
+              {loginError ? (
+                <input
+                  className="admin-password is-error"
+                  type="password"
+                  placeholder="Enter admin password"
+                  value={password}
+                  aria-invalid="true"
+                  onChange={(event) => setPassword(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      void handleLogin()
+                    }
+                  }}
+                />
+              ) : (
+                <input
+                  className="admin-password"
+                  type="password"
+                  placeholder="Enter admin password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      void handleLogin()
+                    }
+                  }}
+                />
+              )}
             </label>
 
-            <button className="primary-button" onClick={() => void handleLogin()}>
-              Enter command center
-            </button>
+            {loginError ? (
+              <div className="admin-login-error-banner" role="alert" aria-live="assertive">
+                {loginError}
+              </div>
+            ) : null}
 
-            <button className="secondary-button theme-toggle" onClick={toggleAdminTheme}>
-              Theme: {adminTheme === 'dark' ? 'Dark' : 'Light'}
-            </button>
+            <div className="admin-login-action-row">
+              <button className="primary-button" onClick={() => void handleLogin()}>
+                Enter command center
+              </button>
+
+              <button className="secondary-button theme-toggle" onClick={toggleAdminTheme}>
+                Theme: {adminTheme === 'dark' ? 'Dark' : 'Light'}
+              </button>
+            </div>
 
             <div className="admin-login-meta">
               <span>Protected admin route</span>
               <span>Room, template and report access</span>
             </div>
 
-            {loginError ? <p className="error-message centered">{loginError}</p> : null}
+            <div className="admin-login-audio-hint" aria-hidden="true">
+              <span className="admin-login-audio-bars">
+                <span />
+                <span />
+                <span />
+              </span>
+              <span>Theme toggle and access control are available immediately after login.</span>
+            </div>
           </section>
         </section>
       </main>
@@ -1471,10 +1671,88 @@ function AdminApp() {
                     <span>Door</span>
                     <input placeholder="e.g. D1" value={roomForm.door} onChange={(event) => setRoomForm({ ...roomForm, door: event.target.value })} />
                   </label>
-                  <label className="form-field">
-                    <span>Image path</span>
-                    <input placeholder="Select or enter path" value={roomForm.image} onChange={(event) => setRoomForm({ ...roomForm, image: event.target.value })} />
-                  </label>
+                  <div className="form-field form-field--full">
+                    <span>Room image</span>
+                    <div className="room-image-field">
+                      <div className={`room-image-selection ${roomForm.image ? 'is-selected' : ''}`}>
+                        <div className="room-image-selection-copy">
+                          <strong>{selectedRoomAsset?.title ?? 'No image selected'}</strong>
+                          <span>
+                            {selectedRoomAsset
+                              ? `${selectedRoomAsset.source} · ${selectedRoomAsset.subtitle}`
+                              : 'Search and choose an uploaded image. The storage path stays hidden.'}
+                          </span>
+                        </div>
+                        <div className="room-image-selection-actions">
+                          <button className="secondary-button compact" onClick={() => setShowRoomImagePicker((current) => !current)}>
+                            {showRoomImagePicker ? 'Hide library' : 'Choose from library'}
+                          </button>
+                          {roomForm.image ? (
+                            <button className="secondary-button compact" onClick={handleClearRoomImage}>
+                              Clear
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {showRoomImagePicker ? (
+                        <div className="room-image-picker">
+                          <div className="room-image-picker-head">
+                            <input
+                              className="search-filter"
+                              placeholder="Search uploaded images"
+                              value={imageQuery}
+                              onChange={(event) => {
+                                setImageQuery(event.target.value)
+                                setImagePage(1)
+                              }}
+                            />
+                            <span className="muted-text">{imagePageData.total} images</span>
+                          </div>
+
+                          {roomImagePickerItems.length > 0 ? (
+                            <>
+                              <div className="room-image-picker-list">
+                                {roomImagePickerItems.map((image) => (
+                                  <button
+                                    key={image.fileName}
+                                    className={`room-image-option ${roomForm.image === image.path ? 'is-selected' : ''}`}
+                                    onClick={() => handleSelectRoomImage(image)}
+                                  >
+                                    <span className="room-image-option-thumb">
+                                      <img src={resolveAssetUrl(image.path)} alt={image.name} loading="lazy" decoding="async" />
+                                    </span>
+                                    <span className="room-image-option-copy">
+                                      <strong title={image.name}>{image.name}</strong>
+                                      <span title={image.fileName}>{image.fileName}</span>
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+
+                              <div className="room-image-picker-footer">
+                                <div className="button-row room-image-picker-pagination">
+                                  <button className="secondary-button compact" disabled={imagePageData.page <= 1} onClick={() => setImagePage((current) => Math.max(1, current - 1))}>
+                                    Previous
+                                  </button>
+                                  <button
+                                    className="secondary-button compact"
+                                    disabled={imagePageData.page >= imagePageData.totalPages}
+                                    onClick={() => setImagePage((current) => Math.min(imagePageData.totalPages, current + 1))}
+                                  >
+                                    Next
+                                  </button>
+                                </div>
+                                <span className="muted-text">Page {imagePageData.page} of {imagePageData.totalPages}</span>
+                              </div>
+                            </>
+                          ) : (
+                            <p className="muted-text">No uploaded images match the current search.</p>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="button-row">
@@ -1491,10 +1769,13 @@ function AdminApp() {
                 <h2>Preview</h2>
                 {roomForm.image ? (
                   <div className="room-preview-panel">
-                    <img src={resolveAssetUrl(roomForm.image)} alt="Selected" />
+                    <img src={resolveAssetUrl(roomForm.image)} alt={selectedRoomAsset?.title ?? 'Selected'} />
                     <div className="room-preview-footer">
-                      <span>{roomForm.image}</span>
-                      <button className="secondary-button compact" onClick={() => setRoomForm((c) => ({ ...c, image: '', building: '' }))}>
+                      <div className="room-preview-copy">
+                        <strong>{selectedRoomAsset?.title ?? 'Selected image'}</strong>
+                        <span>{selectedRoomAsset?.subtitle ?? roomForm.image}</span>
+                      </div>
+                      <button className="secondary-button compact" onClick={handleClearRoomImage}>
                         Remove
                       </button>
                     </div>
@@ -1583,7 +1864,7 @@ function AdminApp() {
                 <div className="rooms-grid">
                   {filteredRooms.map((room) => (
                     <article key={room.usid} className="room-card">
-                      {room.image ? <img src={resolveAssetUrl(room.image)} alt={room.room} /> : <div className="room-card-placeholder">No image</div>}
+                      {room.image ? <img src={resolveAssetUrl(room.image)} alt={room.room} loading="lazy" decoding="async" /> : <div className="room-card-placeholder">No image</div>}
                       <strong>{room.usid}</strong>
                       <span>{room.building}</span>
                       <span>{room.level}</span>
@@ -1708,7 +1989,7 @@ function AdminApp() {
                       className={`template-card ${roomForm.image === template.path ? 'is-selected' : ''}`}
                     >
                       <div className="template-card-preview">
-                        <img src={resolveAssetUrl(template.path)} alt={template.building} />
+                        <img src={resolveAssetUrl(template.path)} alt={template.building} loading="lazy" decoding="async" />
                       </div>
                       <div className="template-card-body">
                         <div className="template-card-header">
@@ -1780,7 +2061,11 @@ function AdminApp() {
                   <p className="muted-text">Upload images, rename them and assign to rooms.</p>
                 </div>
                 <label className="upload-button">
-                  {isUploadingImages ? 'Uploading...' : 'Upload images'}
+                  {isUploadingImages && imageUploadProgress
+                    ? `Uploading ${imageUploadProgress.uploadedFiles}/${imageUploadProgress.totalFiles}`
+                    : isUploadingImages
+                      ? 'Uploading...'
+                      : 'Upload images'}
                   <input
                     type="file"
                     accept="image/*"
@@ -1794,7 +2079,7 @@ function AdminApp() {
                 </label>
               </div>
 
-              <div className="toolbar-row">
+              <div className="toolbar-row image-library-toolbar">
                 <input
                   className="search-filter"
                   placeholder="Search images by name"
@@ -1807,31 +2092,52 @@ function AdminApp() {
                 <span className="muted-text">{imagePageData.total} images total</span>
               </div>
 
+              {imageUploadProgress ? (
+                <div className="upload-progress-card" role="status" aria-live="polite" aria-atomic="true">
+                  <div className="upload-progress-head">
+                    <strong>Uploading image library</strong>
+                    <span className="muted-text">
+                      {imageUploadProgress.uploadedFiles} of {imageUploadProgress.totalFiles} images uploaded
+                    </span>
+                  </div>
+                  <progress className="upload-progress-bar" value={imageUploadProgress.percent} max={100}>
+                    {imageUploadProgress.percent}
+                  </progress>
+                </div>
+              ) : null}
+
               {imagePageData.items.length === 0 ? <p className="muted-text">No images found for the current filter.</p> : null}
 
               <div className="image-library-grid">
                 {imagePageData.items.map((image) => (
                   <article key={image.fileName} className="image-library-card">
-                    <img src={resolveAssetUrl(image.path)} alt={image.name} />
-                    <div className="image-library-meta">
-                      <strong>{image.name}</strong>
-                      <span>{image.fileName}</span>
+                    <div className="image-library-preview">
+                      <img src={resolveAssetUrl(image.path)} alt={image.name} loading="lazy" decoding="async" />
                     </div>
-                    <input
-                      value={imageRenameDrafts[image.fileName] ?? image.name}
-                      onChange={(event) => {
-                        const nextValue = event.target.value
-                        setImageRenameDrafts((current) => ({ ...current, [image.fileName]: nextValue }))
-                      }}
-                      placeholder="Rename image"
-                    />
-                    <div className="button-row">
-                      <button className="secondary-button compact" onClick={() => { setRoomForm((current) => ({ ...current, image: image.path })); setActiveTab('rooms') }}>
-                        Use for room
-                      </button>
-                      <button className="primary-button compact" onClick={() => void handleRenameImage(image)}>
-                        Rename
-                      </button>
+                    <div className="image-library-card-body">
+                      <div className="image-library-meta">
+                        <strong title={image.name}>{image.name}</strong>
+                        <span title={image.fileName}>{image.fileName}</span>
+                      </div>
+                      <input
+                        value={imageRenameDrafts[image.fileName] ?? image.name}
+                        onChange={(event) => {
+                          const nextValue = event.target.value
+                          setImageRenameDrafts((current) => ({ ...current, [image.fileName]: nextValue }))
+                        }}
+                        placeholder="Rename image"
+                      />
+                      <div className="button-row image-library-actions">
+                        <button className="secondary-button compact" onClick={() => { setRoomForm((current) => ({ ...current, image: image.path })); setActiveTab('rooms') }}>
+                          Use for room
+                        </button>
+                        <button className="primary-button compact" onClick={() => void handleRenameImage(image)}>
+                          Rename
+                        </button>
+                        <button className="danger-button compact" onClick={() => void handleDeleteImage(image)}>
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </article>
                 ))}

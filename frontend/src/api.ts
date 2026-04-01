@@ -2,6 +2,16 @@ import type { BuildingTemplate, FeedbackEntry, ReportEntry, Room, UploadedImage,
 
 const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 
+type ImageUploadProgress = {
+  uploadedFiles: number
+  totalFiles: number
+  percent: number
+}
+
+type UploadImagesOptions = {
+  onProgress?: (progress: ImageUploadProgress) => void
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBase}${input}`, {
     credentials: 'include',
@@ -94,24 +104,100 @@ export function importRooms(payload: unknown) {
   })
 }
 
-export async function uploadImages(files: File[]) {
+function estimateUploadedFiles(files: File[], loadedBytes: number) {
+  let cumulativeBytes = 0
+  let uploadedFiles = 0
+
+  for (const file of files) {
+    cumulativeBytes += file.size
+    if (loadedBytes >= cumulativeBytes) {
+      uploadedFiles += 1
+      continue
+    }
+
+    break
+  }
+
+  return uploadedFiles
+}
+
+function parseUploadResponse(responseText: string) {
+  if (!responseText) {
+    return {}
+  }
+
+  try {
+    return JSON.parse(responseText) as unknown
+  } catch {
+    throw new Error('Upload failed')
+  }
+}
+
+export async function uploadImages(files: File[], options: UploadImagesOptions = {}) {
   const formData = new FormData()
   for (const file of files) {
     formData.append('images', file)
   }
 
-  const response = await fetch(`${apiBase}/api/admin/upload-images`, {
-    method: 'POST',
-    body: formData,
-    credentials: 'include',
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0)
+
+  return await new Promise<{ uploaded: UploadedImage[] }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+
+    xhr.open('POST', `${apiBase}/api/admin/upload-images`)
+    xhr.withCredentials = true
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!options.onProgress) {
+        return
+      }
+
+      const percent = event.lengthComputable && event.total > 0
+        ? Math.min(100, Math.round((event.loaded / event.total) * 100))
+        : 0
+      const normalizedLoadedBytes = event.lengthComputable && event.total > 0
+        ? Math.min(totalBytes, Math.round((event.loaded / event.total) * totalBytes))
+        : 0
+
+      options.onProgress({
+        uploadedFiles: estimateUploadedFiles(files, normalizedLoadedBytes),
+        totalFiles: files.length,
+        percent,
+      })
+    })
+
+    xhr.addEventListener('load', () => {
+      try {
+        const payload = parseUploadResponse(xhr.responseText)
+
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const message =
+            typeof payload === 'object' && payload !== null && 'error' in payload
+              ? String(payload.error ?? 'Upload failed')
+              : 'Upload failed'
+
+          reject(new Error(message))
+          return
+        }
+
+        options.onProgress?.({
+          uploadedFiles: files.length,
+          totalFiles: files.length,
+          percent: 100,
+        })
+
+        resolve(payload as { uploaded: UploadedImage[] })
+      } catch (error) {
+        reject(error)
+      }
+    })
+
+    xhr.addEventListener('error', () => {
+      reject(new Error('Upload failed'))
+    })
+
+    xhr.send(formData)
   })
-
-  const payload = await response.json()
-  if (!response.ok) {
-    throw new Error(String(payload.error ?? 'Upload failed'))
-  }
-
-  return payload as { uploaded: UploadedImage[] }
 }
 
 export function getImages(query = '', page = 1, pageSize = 24) {
@@ -179,6 +265,12 @@ export function renameImage(fileName: string, name: string) {
   return request<{ ok: true; image: UploadedImage }>(`/api/admin/images/${encodeURIComponent(fileName)}`, {
     method: 'PATCH',
     body: JSON.stringify({ name }),
+  })
+}
+
+export function deleteImage(fileName: string) {
+  return request<{ ok: true }>(`/api/admin/images/${encodeURIComponent(fileName)}`, {
+    method: 'DELETE',
   })
 }
 

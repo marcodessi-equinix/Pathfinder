@@ -42,6 +42,31 @@ type UploadedImage = {
   path: string
 }
 
+const maxAssetUploadFileSizeBytes = 25 * 1024 * 1024
+
+function formatFileSizeLimit(bytes: number) {
+  const megaBytes = bytes / (1024 * 1024)
+  return Number.isInteger(megaBytes) ? `${megaBytes} MB` : `${megaBytes.toFixed(1)} MB`
+}
+
+function getUploadErrorMessage(error: multer.MulterError) {
+  switch (error.code) {
+    case 'LIMIT_FILE_SIZE':
+      return `Each image must be ${formatFileSizeLimit(maxAssetUploadFileSizeBytes)} or smaller.`
+    case 'LIMIT_FILE_COUNT':
+      return 'Too many files were selected for one upload.'
+    case 'LIMIT_UNEXPECTED_FILE':
+      return 'Unexpected upload field. Please select images again and retry.'
+    case 'LIMIT_PART_COUNT':
+    case 'LIMIT_FIELD_KEY':
+    case 'LIMIT_FIELD_VALUE':
+    case 'LIMIT_FIELD_COUNT':
+      return 'The upload payload could not be processed.'
+    default:
+      return 'Upload failed.'
+  }
+}
+
 type BuildingTemplate = {
   fileName: string
   name: string
@@ -673,6 +698,18 @@ function normalizeTemplateName(value: string) {
     .replace(/[^a-z0-9]+/g, '')
 }
 
+function deleteImageFile(fileName: string) {
+  const sourceFile = path.basename(fileName)
+  const sourcePath = path.join(uploadsDir, sourceFile)
+
+  if (!existsSync(sourcePath)) {
+    throw new Error('Image not found.')
+  }
+
+  unlinkSync(sourcePath)
+  clearRoomImageStatement.run('', `/uploads/${encodeURIComponent(sourceFile)}`)
+}
+
 function renameImageFile(fileName: string, name: string) {
   const sourceFile = path.basename(fileName)
   const sourcePath = path.join(uploadsDir, sourceFile)
@@ -780,8 +817,7 @@ const upload = multer({
     },
   }),
   limits: {
-    fileSize: 10 * 1024 * 1024,
-    files: 50,
+    fileSize: maxAssetUploadFileSizeBytes,
   },
   fileFilter: (_req, file, callback) => {
     callback(null, file.mimetype.startsWith('image/'))
@@ -799,7 +835,7 @@ const templateUpload = multer({
     },
   }),
   limits: {
-    fileSize: 10 * 1024 * 1024,
+    fileSize: maxAssetUploadFileSizeBytes,
     files: 50,
   },
   fileFilter: (_req, file, callback) => {
@@ -817,8 +853,8 @@ app.use(
 )
 app.use(cookieParser())
 app.use(express.json({ limit: '2mb' }))
-app.use('/uploads', express.static(uploadsDir))
-app.use('/building-templates', express.static(buildingTemplatesDir))
+app.use('/uploads', express.static(uploadsDir, { maxAge: '7d', immutable: true }))
+app.use('/building-templates', express.static(buildingTemplatesDir, { maxAge: '7d', immutable: true }))
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })
@@ -951,7 +987,7 @@ app.post('/api/admin/import', requireAdmin, (req, res) => {
   res.json({ ok: true, imported: rooms.length })
 })
 
-app.post('/api/admin/upload-images', requireAdmin, upload.array('images', 50), (req, res) => {
+app.post('/api/admin/upload-images', requireAdmin, upload.array('images'), (req, res) => {
   const files = (req.files ?? []) as Express.Multer.File[]
 
   if (files.length === 0) {
@@ -1094,6 +1130,20 @@ app.patch('/api/admin/images/:fileName', requireAdmin, (req, res) => {
   }
 })
 
+app.delete('/api/admin/images/:fileName', requireAdmin, (req, res) => {
+  try {
+    deleteImageFile(String(req.params.fileName ?? ''))
+    res.json({ ok: true })
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(404).json({ error: error.message })
+      return
+    }
+
+    throw error
+  }
+})
+
 app.get('/api/admin/feedback', requireAdmin, (_req, res) => {
   res.json(listFeedbackStatement.all() as FeedbackRow[])
 })
@@ -1174,6 +1224,11 @@ app.get('/api/admin/analytics/charts', requireAdmin, (_req, res) => {
 })
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (error instanceof multer.MulterError) {
+    res.status(400).json({ error: getUploadErrorMessage(error) })
+    return
+  }
+
   console.error(error)
   res.status(500).json({ error: 'Internal server error' })
 })

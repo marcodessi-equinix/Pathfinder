@@ -1,0 +1,34 @@
+<svg width="800" height="600" viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3.5" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <radialGradient id="gridGradient" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+      <stop offset="0%" style="stop-color:rgb(37, 99, 235);stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:rgb(15, 23, 42);stop-opacity:0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Grid background -->
+  <rect width="100%" height="100%" fill="url(#gridGradient)" class="grid-bg" />
+  
+  <!-- Grid lines -->
+  <g class="grid-lines" stroke="rgba(56, 189, 248, 0.2)">
+    <path d="M0 100 H800 M0 200 H800 M0 300 H800 M0 400 H800 M0 500 H800" stroke-width="1"/>
+    <path d="M100 0 V600 M200 0 V600 M300 0 V600 M400 0 V600 M500 0 V600 M600 0 V600 M700 0 V600" stroke-width="1"/>
+  </g>
+
+  <!-- Animated path -->
+  <path class="path" d="M50,300 C150,100 250,500 350,300 S550,100 650,300 S750,500 750,500" stroke-width="4" stroke-linecap="round" filter="url(#glow)"/>
+  
+  <!-- Pulsing start/end points -->
+  <circle class="start-point" cx="50" cy="300" r="8" fill="#f59e0b"/>
+  <circle class="end-point" cx="750" cy="500" r="8" fill="#10b981"/>
+
+  <!-- Pathfinder Text -->
+  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" class="title-text">PATHFINDER</text>
+</svg>

@@ -12,6 +12,24 @@ type UploadImagesOptions = {
   onProgress?: (progress: ImageUploadProgress) => void
 }
 
+function extractApiErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object') {
+    // ZodError flatten: { formErrors: string[], fieldErrors: Record<string, string[]> }
+    const zodErr = error as { formErrors?: string[]; fieldErrors?: Record<string, string[]> }
+    if (zodErr.formErrors && zodErr.formErrors.length > 0) return zodErr.formErrors[0]
+    if (zodErr.fieldErrors) {
+      const firstKey = Object.keys(zodErr.fieldErrors)[0]
+      if (firstKey) {
+        const msgs = zodErr.fieldErrors[firstKey]
+        return `Field "${firstKey}": ${Array.isArray(msgs) ? msgs[0] : msgs}`
+      }
+    }
+    return JSON.stringify(error)
+  }
+  return 'Unexpected error'
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBase}${input}`, {
     credentials: 'include',
@@ -28,7 +46,7 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const message =
       typeof payload === 'object' && payload !== null && 'error' in payload
-        ? String(payload.error)
+        ? extractApiErrorMessage(payload.error)
         : 'Unexpected error'
 
     throw new Error(message)

@@ -166,21 +166,29 @@ async function parseImportWorkbook(file: File): Promise<Room[]> {
 
   const rows = worksheet.getRows(2, Math.max(worksheet.rowCount - 1, 0)) ?? []
 
-  return rows
+  function resolveCellNumber(cell: { value: unknown; text: string }): string {
+    const v = cell.value
+    if (typeof v === 'number') return String(Math.round(v))
+    // Formula cells: { formula, result }
+    if (v !== null && typeof v === 'object' && 'result' in v) {
+      const r = (v as { result: unknown }).result
+      if (typeof r === 'number') return String(Math.round(r))
+      if (typeof r === 'string') return r.trim()
+    }
+    return String(cell.text ?? '').trim()
+  }
+
+  const parsed = rows
     .map((row) => {
       const values = Object.fromEntries(
         headers.map((header: string, index: number) => {
           const cell = row.getCell(index + 1)
-          // Use raw numeric value so we can zero-pad USIDs that Excel stored as numbers
-          const rawValue = typeof cell.value === 'number'
-            ? String(Math.round(cell.value))
-            : String(cell.text ?? '').trim()
-          return [header, rawValue]
+          return [header, resolveCellNumber(cell)]
         }),
       )
       // Zero-pad USID to 6 digits if Excel stripped leading zeros (stored as number)
       const rawUsid = values.usid ?? ''
-      const usid = /^\d{1,5}$/.test(rawUsid) ? rawUsid.padStart(6, '0') : rawUsid
+      const usid = /^\d{1,6}$/.test(rawUsid) ? rawUsid.padStart(6, '0') : rawUsid
       return {
         usid,
         building: values.building ?? '',
@@ -191,6 +199,22 @@ async function parseImportWorkbook(file: File): Promise<Room[]> {
       }
     })
     .filter((row) => Object.values(row).some((value) => value.length > 0))
+
+  // Validate required fields before sending to the backend
+  const requiredFields = ['usid', 'building', 'level', 'room', 'door'] as const
+  for (let i = 0; i < parsed.length; i++) {
+    const row = parsed[i]
+    for (const field of requiredFields) {
+      if (!row[field]) {
+        throw new Error(`Row ${i + 2}: column "${field}" is empty or missing.`)
+      }
+    }
+    if (!/^\d{6}$/.test(row.usid)) {
+      throw new Error(`Row ${i + 2}: USID "${row.usid}" must be exactly 6 digits.`)
+    }
+  }
+
+  return parsed
 }
 
 function createEmptyImagePage(): UploadedImagePage {

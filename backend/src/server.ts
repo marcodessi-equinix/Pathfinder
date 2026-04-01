@@ -201,8 +201,10 @@ try {
   }
 } catch { /* table is already in new format */ }
 
+const usidSchema = z.string().trim().min(1).max(16).regex(/^[A-Za-z0-9\-_]+$/)
+
 const roomSchema = z.object({
-  usid: z.string().trim().regex(/^\d{6}$/),
+  usid: usidSchema,
   building: z.string().trim().min(1).max(120),
   level: z.string().trim().min(1).max(120),
   room: z.string().trim().min(1).max(120),
@@ -211,12 +213,12 @@ const roomSchema = z.object({
 })
 
 const searchSchema = z.object({
-  usid: z.string().trim().regex(/^\d{6}$/),
+  usid: usidSchema,
 })
 
 const feedbackSchema = z
   .object({
-    usid: z.string().trim().regex(/^\d{6}$/),
+    usid: usidSchema,
     rating: z.number().int().min(1).max(5),
     comment: z.string().trim().max(500).optional().default(''),
   })
@@ -268,6 +270,15 @@ const deleteRoomStatement = database.prepare('DELETE FROM rooms WHERE usid = ?')
 const selectRoomStatement = database.prepare(
   'SELECT usid, building, level, room, door, image FROM rooms WHERE usid = ?',
 )
+// Finds the room whose stored USID exactly matches OR is the longest prefix of the query.
+// Example: stored '314', query '314022' → prefix match returns room 314.
+const prefixMatchRoomStatement = database.prepare(`
+  SELECT usid, building, level, room, door, image FROM rooms
+  WHERE usid = ?
+     OR (LENGTH(usid) >= 3 AND ? LIKE usid || '%')
+  ORDER BY LENGTH(usid) DESC
+  LIMIT 1
+`)
 const listRoomsStatement = database.prepare(
   'SELECT usid, building, level, room, door, image FROM rooms ORDER BY usid ASC',
 )
@@ -314,7 +325,7 @@ function normalizeImagePath(image: string): string {
 
 function saveRoom(room: Room) {
   saveRoomStatement.run(
-    room.usid,
+    room.usid.toUpperCase(),
     room.building,
     room.level,
     room.room,
@@ -867,13 +878,14 @@ app.post('/api/search', (req, res) => {
     return
   }
 
-  const room = selectRoomStatement.get(payload.data.usid) as Room | undefined
+  const normalizedUsid = payload.data.usid.toUpperCase()
+  const room = prefixMatchRoomStatement.get(normalizedUsid, normalizedUsid) as Room | undefined
   if (!room) {
     res.status(404).json({ error: 'No room found for this USID.' })
     return
   }
 
-  insertAnalyticsStatement.run(payload.data.usid, new Date().toISOString())
+  insertAnalyticsStatement.run(normalizedUsid, new Date().toISOString())
   res.json(room)
 })
 

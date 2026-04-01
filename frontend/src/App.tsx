@@ -188,7 +188,7 @@ async function parseImportWorkbook(file: File): Promise<Room[]> {
       )
       // Zero-pad USID to 6 digits if Excel stripped leading zeros (stored as number)
       const rawUsid = values.usid ?? ''
-      const usid = /^\d{1,6}$/.test(rawUsid) ? rawUsid.padStart(6, '0') : rawUsid
+      const usid = /^\d{1,5}$/.test(rawUsid) ? rawUsid.padStart(6, '0') : rawUsid
       return {
         usid,
         building: values.building ?? '',
@@ -209,8 +209,8 @@ async function parseImportWorkbook(file: File): Promise<Room[]> {
         throw new Error(`Row ${i + 2}: column "${field}" is empty or missing.`)
       }
     }
-    if (!/^\d{6}$/.test(row.usid)) {
-      throw new Error(`Row ${i + 2}: USID "${row.usid}" must be exactly 6 digits.`)
+    if (!/^[A-Za-z0-9\-_]{1,16}$/.test(row.usid)) {
+      throw new Error(`Row ${i + 2}: USID "${row.usid}" contains invalid characters or is too long.`)
     }
   }
 
@@ -389,7 +389,7 @@ function KioskApp() {
   }, [input, selectedRoom, selectedTemplate])
 
   async function runSearch(usid: string) {
-    if (usid.length !== 6) {
+    if (usid.length < 3) {
       return
     }
 
@@ -1687,7 +1687,7 @@ function AdminApp() {
                 <div className="form-grid">
                   <label className="form-field">
                     <span>USID</span>
-                    <input placeholder="e.g. 100234" value={roomForm.usid} onChange={(event) => setRoomForm({ ...roomForm, usid: event.target.value.replace(/\D/g, '').slice(0, 6) })} />
+                    <input placeholder="e.g. 314 or ANT001" value={roomForm.usid} onChange={(event) => setRoomForm({ ...roomForm, usid: event.target.value.toUpperCase().replace(/[^A-Z0-9\-_]/g, '').slice(0, 16) })} />
                   </label>
                   <label className="form-field">
                     <span>Building</span>

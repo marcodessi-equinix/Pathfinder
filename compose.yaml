@@ -19,12 +19,6 @@ services:
       - pathfinder_data:/app/data
       - pathfinder_uploads:/app/uploads
       - pathfinder_building_templates:/app/building-templates
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 8
-      start_period: 60s
     restart: unless-stopped
 
   nginx:
@@ -32,8 +26,7 @@ services:
       context: .
       dockerfile: ./infra/nginx/Dockerfile
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
     ports:
       - "${APP_PORT:-9110}:80"
     restart: unless-stopped

@@ -17,6 +17,7 @@ FROM node:25-bookworm-slim AS runtime
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV NODE_OPTIONS="--experimental-sqlite"
 
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/package.json

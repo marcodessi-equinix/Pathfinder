@@ -18,8 +18,9 @@ export type FeedbackEntry = {
 export type ReportEntry = {
   usid: string
   searches: number
-  up: number
-  down: number
+  positive: number
+  neutral: number
+  negative: number
   lastActivity: string
 }
 
@@ -52,4 +53,23 @@ export type ChartData = {
   topRooms: Array<{ usid: string; searches: number; building: string; room: string }>
   searchesByBuilding: Array<{ building: string; count: number }>
   avgRatingPerDay: Array<{ day: string; avg: number }>
+}
+
+export type IbxConfig = {
+  current: string
+  available: string[]
+  isPrepared: boolean
+}
+
+export type QuickLink = {
+  id: number
+  label: string
+  usid: string
+  sortOrder: number
+}
+
+export type QuickLinkForm = {
+  label: string
+  usid: string
+  sortOrder: number
 }

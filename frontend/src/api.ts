@@ -1,6 +1,18 @@
-import type { BuildingTemplate, FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
+import type { BuildingTemplate, FeedbackEntry, IbxConfig, QuickLink, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
 
 const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
+
+export class ApiError extends Error {
+  status: number
+  retryAfterSeconds?: number
+
+  constructor(message: string, status: number, retryAfterSeconds?: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
 
 type ImageUploadProgress = {
   uploadedFiles: number
@@ -49,7 +61,12 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
         ? extractApiErrorMessage(payload.error)
         : 'Unexpected error'
 
-    throw new Error(message)
+    const retryAfterSeconds =
+      typeof payload === 'object' && payload !== null && 'retryAfterSeconds' in payload
+        ? Number(payload.retryAfterSeconds ?? 0)
+        : undefined
+
+    throw new ApiError(message, response.status, retryAfterSeconds)
   }
 
   return payload as T
@@ -72,6 +89,10 @@ export function searchRoom(usid: string) {
     method: 'POST',
     body: JSON.stringify({ usid }),
   })
+}
+
+export function getPublicRoom(usid: string) {
+  return request<Room>(`/api/rooms/${encodeURIComponent(usid)}`)
 }
 
 export function sendFeedback(usid: string, rating: number, comment: string) {
@@ -112,6 +133,13 @@ export function saveRoom(room: Room) {
 export function deleteRoom(usid: string) {
   return request<{ ok: true }>(`/api/admin/rooms/${usid}`, {
     method: 'DELETE',
+  })
+}
+
+export function bulkDeleteRooms(ids: string[]) {
+  return request<{ ok: true; deleted: number }>('/api/admin/rooms/bulk-delete', {
+    method: 'DELETE',
+    body: JSON.stringify({ ids }),
   })
 }
 
@@ -279,6 +307,13 @@ export function deleteBuildingTemplate(fileName: string) {
   })
 }
 
+export function bulkDeleteBuildingTemplates(ids: string[]) {
+  return request<{ ok: true; deleted: number }>('/api/admin/building-templates/bulk-delete', {
+    method: 'DELETE',
+    body: JSON.stringify({ ids }),
+  })
+}
+
 export function renameImage(fileName: string, name: string) {
   return request<{ ok: true; image: UploadedImage }>(`/api/admin/images/${encodeURIComponent(fileName)}`, {
     method: 'PATCH',
@@ -292,12 +327,31 @@ export function deleteImage(fileName: string) {
   })
 }
 
+export function bulkDeleteImages(ids: string[]) {
+  return request<{ ok: true; deleted: number }>('/api/admin/images/bulk-delete', {
+    method: 'DELETE',
+    body: JSON.stringify({ ids }),
+  })
+}
+
 export function getFeedback() {
   return request<FeedbackEntry[]>('/api/admin/feedback')
 }
 
+export function clearFeedback() {
+  return request<{ ok: true }>('/api/admin/feedback', {
+    method: 'DELETE',
+  })
+}
+
 export function getReport() {
   return request<ReportEntry[]>('/api/admin/report')
+}
+
+export function clearAnalytics() {
+  return request<{ ok: true }>('/api/admin/analytics', {
+    method: 'DELETE',
+  })
 }
 
 export function getDownloadUrl(path: string) {
@@ -306,4 +360,47 @@ export function getDownloadUrl(path: string) {
 
 export function getChartData() {
   return request<import('./types').ChartData>('/api/admin/analytics/charts')
+}
+
+export function getIbxConfig() {
+  return request<IbxConfig>('/api/admin/ibx-config')
+}
+
+export function searchSuggest(usid: string) {
+  return request<{ suggestions: Room[] }>('/api/search/suggest', {
+    method: 'POST',
+    body: JSON.stringify({ usid }),
+  })
+}
+
+export function getQuickLinks() {
+  return request<QuickLink[]>('/api/quick-links')
+}
+
+export function getAdminQuickLinks() {
+  return request<QuickLink[]>('/api/admin/quick-links')
+}
+
+export function saveQuickLink(data: { label: string; usid: string; sortOrder: number }) {
+  return request<{ ok: true; id: number }>('/api/admin/quick-links', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function updateQuickLink(id: number, data: { label: string; usid: string; sortOrder: number }) {
+  return request<{ ok: true }>(`/api/admin/quick-links/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+}
+
+export function deleteQuickLink(id: number) {
+  return request<{ ok: true }>(`/api/admin/quick-links/${id}`, {
+    method: 'DELETE',
+  })
+}
+
+export function openKioskLiveUpdates() {
+  return new EventSource(`${apiBase}/api/kiosk/events`)
 }

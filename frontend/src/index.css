@@ -1,3 +1,23 @@
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+@theme inline {
+  --font-sans: 'Aptos', 'Segoe UI', sans-serif;
+  --color-admin-bg-panel: var(--bg-panel);
+  --color-admin-bg-elevated: var(--bg-elevated);
+  --color-admin-border: var(--admin-border);
+  --color-admin-surface-strong: var(--admin-surface-strong);
+  --color-admin-text: var(--admin-text);
+  --color-admin-text-soft: var(--admin-text-soft);
+  --color-admin-text-muted: var(--admin-text-muted);
+  --color-admin-primary: var(--primary);
+  --color-admin-primary-hover: var(--primary-hover);
+  --color-admin-danger: var(--danger);
+  --color-admin-success: var(--success);
+  --shadow-admin: var(--admin-shadow);
+}
+
 :root {
   color: #111827;
   background: #f4f6f8;
@@ -38,9 +58,7 @@ body,
 
 body {
   overflow-x: hidden;
-  background:
-    radial-gradient(circle at top, rgba(255, 255, 255, 0.88), rgba(244, 246, 248, 0.92)),
-    linear-gradient(180deg, #ffffff 0%, #edf2f7 100%);
+  background: #fff;
 }
 
 body.admin-mode {
@@ -57,12 +75,6 @@ body.admin-mode[data-admin-theme='dark'] {
     radial-gradient(circle at top left, rgba(56, 189, 248, 0.14), transparent 28%),
     radial-gradient(circle at top right, rgba(99, 102, 241, 0.12), transparent 24%),
     linear-gradient(180deg, #0b1221 0%, #0d1526 58%, #111b2f 100%);
-}
-
-body.kiosk-mode {
-  overflow: hidden;
-  overscroll-behavior: none;
-  touch-action: manipulation;
 }
 
 button,

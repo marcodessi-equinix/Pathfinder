@@ -1,16 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import SplashScreen from './SplashScreen'
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import {
+  ApiError,
+  bulkDeleteBuildingTemplates,
+  bulkDeleteImages,
+  bulkDeleteRooms,
+  clearAnalytics,
+  clearFeedback,
+  deleteQuickLink,
   deleteBuildingTemplate,
   deleteImage,
   deleteRoom,
   getAdminSession,
+  getAdminQuickLinks,
   getBuildingTemplates,
   getChartData,
   getDownloadUrl,
   getFeedback,
+  getIbxConfig,
   getImages,
   getPublicBuildingTemplates,
+  getPublicRoom,
+  getQuickLinks,
   getReport,
   getRooms,
   importRooms,
@@ -19,15 +29,20 @@ import {
   renameBuildingTemplate,
   renameImage,
   resolveAssetUrl,
+  saveQuickLink,
   saveRoom,
   searchRoom,
+  searchSuggest,
   setBuildingTemplateVisibility,
   sendFeedback,
+  updateQuickLink,
   uploadBuildingTemplates,
   uploadImages,
+  openKioskLiveUpdates,
 } from './api'
 import './App.css'
-import type { BuildingTemplate, ChartData, FeedbackEntry, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
+import LoginPage from './components/admin-login/LoginPage'
+import type { BuildingTemplate, ChartData, FeedbackEntry, IbxConfig, QuickLink, QuickLinkForm, ReportEntry, Room, UploadedImage, UploadedImagePage } from './types'
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -63,6 +78,12 @@ type UploadProgressState = {
   percent: number
 }
 
+type LightboxAsset = {
+  src: string
+  title: string
+  subtitle?: string
+}
+
 const emptyRoom: RoomForm = {
   usid: '',
   building: '',
@@ -74,32 +95,690 @@ const emptyRoom: RoomForm = {
 
 const roomWorkbookHeaders = ['USID', 'Building', 'Level', 'Room', 'Door', 'Image'] as const
 const imagePageSize = 24
+const feedbackOptions = [
+  { value: 1, label: 'Not helpful', shortLabel: 'No', tone: 'critical', badgeTone: 'negative', emoji: '👎' },
+  { value: 2, label: 'Partly helpful', shortLabel: 'Okay', tone: 'neutral', badgeTone: 'neutral', emoji: '👌' },
+  { value: 3, label: 'Helpful', shortLabel: 'Yes', tone: 'excellent', badgeTone: 'positive', emoji: '👍' },
+] as const
+const emptyQuickLinkForm: QuickLinkForm = { label: '', usid: '', sortOrder: 0 }
 const chartTooltipContentStyle = {
-  background: 'rgba(255, 255, 255, 0.98)',
-  border: '1px solid rgba(148, 163, 184, 0.35)',
+  background: 'var(--chart-tooltip-bg)',
+  border: '1px solid var(--chart-tooltip-border)',
   borderRadius: 12,
-  boxShadow: '0 18px 32px rgba(15, 23, 42, 0.14)',
+  boxShadow: 'var(--chart-tooltip-shadow)',
 }
 const chartTooltipLabelStyle = {
-  color: '#0f172a',
+  color: 'var(--chart-tooltip-text)',
   fontWeight: 700,
 }
 const chartTooltipItemStyle = {
-  color: '#334155',
+  color: 'var(--chart-tooltip-muted)',
 }
 const chartHoverCursorLine = {
-  stroke: 'rgba(37, 99, 235, 0.35)',
+  stroke: 'var(--chart-cursor-line)',
   strokeWidth: 1,
 }
 const chartHoverCursorFill = {
-  fill: 'rgba(37, 99, 235, 0.08)',
+  fill: 'var(--chart-cursor-fill)',
 }
+const chartRatingPalette = [
+  'var(--chart-rating-1)',
+  'var(--chart-rating-2)',
+  'var(--chart-rating-3)',
+] as const
+const chartScalePalette = [
+  'var(--chart-scale-1)',
+  'var(--chart-scale-2)',
+  'var(--chart-scale-3)',
+  'var(--chart-scale-4)',
+  'var(--chart-scale-5)',
+  'var(--chart-scale-6)',
+  'var(--chart-scale-7)',
+] as const
 const adminThemeStorageKey = 'pathfinder-admin-theme'
 
 type AdminTheme = 'dark' | 'light'
+type FeedbackOption = (typeof feedbackOptions)[number]
+
+function normalizeFeedbackRating(value: number) {
+  if (value <= 2) {
+    return 1
+  }
+
+  if (value === 3) {
+    return 2
+  }
+
+  return 3
+}
+
+function getFeedbackOption(value: number): FeedbackOption {
+  return feedbackOptions[Math.max(0, Math.min(feedbackOptions.length - 1, normalizeFeedbackRating(value) - 1))]
+}
+
+const feedbackScaleMax = feedbackOptions.length
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
+}
+
+function formatLockout(secondsLeft: number) {
+  const minutes = Math.floor(secondsLeft / 60)
+  const seconds = secondsLeft % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+function sanitizeKioskInput(value: string) {
+  return value.toUpperCase().replace(/[^A-Z0-9\-_]/g, '').slice(0, 16)
+}
+
+function getTemplateBadgeLabel(value: string) {
+  const cleaned = value.replace(/[^A-Za-z0-9]+/g, ' ').trim()
+  const parts = cleaned.split(/\s+/).filter(Boolean)
+
+  if (parts.length === 0) {
+    return 'PF'
+  }
+
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase()
+  }
+
+  return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase()
+}
+
+function toggleId(current: string[], id: string) {
+  return current.includes(id)
+    ? current.filter((entry) => entry !== id)
+    : [...current, id]
+}
+
+function FeedbackGlyph({ value }: { value: number }) {
+  const activeBars = normalizeFeedbackRating(value)
+
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true" className="feedback-glyph">
+      {feedbackOptions.map((_, index) => {
+        const isActive = index < activeBars
+        const height = 14 + index * 8
+
+        return (
+          <rect
+            key={index}
+            x={8 + index * 12}
+            y={36 - height}
+            width="8"
+            height={height}
+            rx="4"
+            className={isActive ? 'is-active' : 'is-inactive'}
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
+type KioskViewerTransform = {
+  scale: number
+  x: number
+  y: number
+}
+
+const defaultKioskViewerTransform: KioskViewerTransform = {
+  scale: 1,
+  x: 0,
+  y: 0,
+}
+
+type KioskViewerPointer = {
+  startX: number
+  startY: number
+  x: number
+  y: number
+}
+
+const kioskViewerMinScale = 1
+const kioskViewerMaxScale = 4
+const kioskViewerDoubleTapDelayMs = 280
+const kioskViewerDoubleTapDistancePx = 24
+const kioskViewerDoubleTapScale = 2.4
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function KioskImageViewer({ asset, onClose }: { asset: LightboxAsset | null; onClose: () => void }) {
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const imageRef = useRef<HTMLImageElement | null>(null)
+  const pointersRef = useRef(new Map<number, KioskViewerPointer>())
+  const pinchDistanceRef = useRef<number | null>(null)
+  const panOriginRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
+  const pendingTransformRef = useRef<KioskViewerTransform | null>(null)
+  const frameRef = useRef<number | null>(null)
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null)
+  const transformRef = useRef<KioskViewerTransform>(defaultKioskViewerTransform)
+  const [transform, setTransform] = useState<KioskViewerTransform>(defaultKioskViewerTransform)
+  const [showGestureHint, setShowGestureHint] = useState(true)
+
+  function readMetrics() {
+    const stage = stageRef.current
+    const image = imageRef.current
+
+    if (!stage || !image) {
+      return null
+    }
+
+    return {
+      width: stage.clientWidth,
+      height: stage.clientHeight,
+      imageWidth: image.clientWidth,
+      imageHeight: image.clientHeight,
+      rect: stage.getBoundingClientRect(),
+    }
+  }
+
+  function clampTransform(next: KioskViewerTransform) {
+    const scale = clampNumber(next.scale, kioskViewerMinScale, kioskViewerMaxScale)
+    const metrics = readMetrics()
+
+    if (!metrics || metrics.imageWidth === 0 || metrics.imageHeight === 0) {
+      return {
+        scale,
+        x: scale <= kioskViewerMinScale ? 0 : next.x,
+        y: scale <= kioskViewerMinScale ? 0 : next.y,
+      }
+    }
+
+    const maxX = Math.max(0, (metrics.imageWidth * scale - metrics.width) / 2)
+    const maxY = Math.max(0, (metrics.imageHeight * scale - metrics.height) / 2)
+
+    return {
+      scale,
+      x: maxX === 0 ? 0 : clampNumber(next.x, -maxX, maxX),
+      y: maxY === 0 ? 0 : clampNumber(next.y, -maxY, maxY),
+    }
+  }
+
+  function commitTransform(next: KioskViewerTransform, immediate = false) {
+    const clamped = clampTransform(next)
+    transformRef.current = clamped
+
+    if (immediate) {
+      pendingTransformRef.current = null
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+      setTransform((current) => (
+        current.scale === clamped.scale && current.x === clamped.x && current.y === clamped.y ? current : clamped
+      ))
+      return
+    }
+
+    pendingTransformRef.current = clamped
+    if (frameRef.current !== null) {
+      return
+    }
+
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null
+      const pending = pendingTransformRef.current
+      pendingTransformRef.current = null
+
+      if (!pending) {
+        return
+      }
+
+      setTransform((current) => (
+        current.scale === pending.scale && current.x === pending.x && current.y === pending.y ? current : pending
+      ))
+    })
+  }
+
+  function resetTransform(immediate = false) {
+    commitTransform(defaultKioskViewerTransform, immediate)
+  }
+
+  const handleViewerKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      onClose()
+      return
+    }
+
+    if (event.key === '0') {
+      resetTransform()
+    }
+  })
+
+  const handleViewerResize = useEffectEvent(() => {
+    commitTransform(transformRef.current, true)
+  })
+
+  function zoomAtPoint(targetScale: number, clientX: number, clientY: number) {
+    const metrics = readMetrics()
+    const current = transformRef.current
+
+    if (!metrics) {
+      commitTransform({ scale: targetScale, x: 0, y: 0 })
+      return
+    }
+
+    const nextScale = clampNumber(targetScale, kioskViewerMinScale, kioskViewerMaxScale)
+    if (nextScale <= kioskViewerMinScale) {
+      resetTransform()
+      return
+    }
+
+    const focalX = clientX - (metrics.rect.left + metrics.rect.width / 2)
+    const focalY = clientY - (metrics.rect.top + metrics.rect.height / 2)
+    const ratio = nextScale / current.scale
+
+    commitTransform({
+      scale: nextScale,
+      x: focalX - (focalX - current.x) * ratio,
+      y: focalY - (focalY - current.y) * ratio,
+    })
+  }
+
+  const handleViewerWheel = useEffectEvent((event: WheelEvent) => {
+    event.preventDefault()
+    const zoomFactor = event.deltaY < 0 ? 1.14 : 0.88
+    zoomAtPoint(transformRef.current.scale * zoomFactor, event.clientX, event.clientY)
+    setShowGestureHint(false)
+  })
+
+  function beginPan(pointerId: number) {
+    const pointer = pointersRef.current.get(pointerId)
+    if (!pointer || transformRef.current.scale <= kioskViewerMinScale) {
+      panOriginRef.current = null
+      return
+    }
+
+    panOriginRef.current = {
+      pointerId,
+      startX: pointer.x,
+      startY: pointer.y,
+      originX: transformRef.current.x,
+      originY: transformRef.current.y,
+    }
+  }
+
+  function releasePointer(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      } catch {
+        // noop
+      }
+    }
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return
+    }
+
+    setShowGestureHint(false)
+    event.currentTarget.setPointerCapture(event.pointerId)
+    pointersRef.current.set(event.pointerId, {
+      startX: event.clientX,
+      startY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+    })
+
+    const pointers = Array.from(pointersRef.current.values())
+    if (pointers.length === 1) {
+      beginPan(event.pointerId)
+      return
+    }
+
+    if (pointers.length === 2) {
+      const [first, second] = pointers
+      pinchDistanceRef.current = Math.hypot(second.x - first.x, second.y - first.y)
+      panOriginRef.current = null
+      lastTapRef.current = null
+    }
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const currentPointer = pointersRef.current.get(event.pointerId)
+    if (!currentPointer) {
+      return
+    }
+
+    currentPointer.x = event.clientX
+    currentPointer.y = event.clientY
+
+    const pointers = Array.from(pointersRef.current.values())
+    if (pointers.length === 2) {
+      const [first, second] = pointers
+      const distance = Math.hypot(second.x - first.x, second.y - first.y)
+      const previousDistance = pinchDistanceRef.current
+
+      if (!previousDistance || previousDistance <= 0) {
+        pinchDistanceRef.current = distance
+        return
+      }
+
+      const centerX = (first.x + second.x) / 2
+      const centerY = (first.y + second.y) / 2
+      const currentTransform = transformRef.current
+      const nextScale = clampNumber(currentTransform.scale * (distance / previousDistance), kioskViewerMinScale, kioskViewerMaxScale)
+      const metrics = readMetrics()
+
+      if (metrics) {
+        const focalX = centerX - (metrics.rect.left + metrics.rect.width / 2)
+        const focalY = centerY - (metrics.rect.top + metrics.rect.height / 2)
+        const ratio = nextScale / currentTransform.scale
+
+        commitTransform({
+          scale: nextScale,
+          x: focalX - (focalX - currentTransform.x) * ratio,
+          y: focalY - (focalY - currentTransform.y) * ratio,
+        })
+      }
+
+      pinchDistanceRef.current = distance
+      return
+    }
+
+    if (pointers.length === 1 && panOriginRef.current && panOriginRef.current.pointerId === event.pointerId) {
+      commitTransform({
+        scale: transformRef.current.scale,
+        x: panOriginRef.current.originX + (currentPointer.x - panOriginRef.current.startX),
+        y: panOriginRef.current.originY + (currentPointer.y - panOriginRef.current.startY),
+      })
+    }
+  }
+
+  function maybeHandleTap(pointer: KioskViewerPointer) {
+    const movedDistance = Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY)
+    if (movedDistance > 12) {
+      lastTapRef.current = null
+      return
+    }
+
+    const now = Date.now()
+    const previousTap = lastTapRef.current
+    if (
+      previousTap
+      && now - previousTap.time <= kioskViewerDoubleTapDelayMs
+      && Math.hypot(previousTap.x - pointer.x, previousTap.y - pointer.y) <= kioskViewerDoubleTapDistancePx
+    ) {
+      if (transformRef.current.scale > 1.4) {
+        resetTransform()
+      } else {
+        zoomAtPoint(kioskViewerDoubleTapScale, pointer.x, pointer.y)
+      }
+      lastTapRef.current = null
+      return
+    }
+
+    lastTapRef.current = {
+      time: now,
+      x: pointer.x,
+      y: pointer.y,
+    }
+  }
+
+  function handlePointerRelease(event: ReactPointerEvent<HTMLDivElement>) {
+    const pointer = pointersRef.current.get(event.pointerId)
+    const activePointerCount = pointersRef.current.size
+    releasePointer(event)
+    pointersRef.current.delete(event.pointerId)
+
+    if (activePointerCount >= 2) {
+      const remainingPointers = Array.from(pointersRef.current.entries())
+      pinchDistanceRef.current = remainingPointers.length === 2
+        ? Math.hypot(remainingPointers[1][1].x - remainingPointers[0][1].x, remainingPointers[1][1].y - remainingPointers[0][1].y)
+        : null
+
+      if (remainingPointers.length === 1) {
+        beginPan(remainingPointers[0][0])
+      }
+
+      lastTapRef.current = null
+      return
+    }
+
+    pinchDistanceRef.current = null
+    panOriginRef.current = null
+
+    if (pointer) {
+      maybeHandleTap(pointer)
+    }
+  }
+
+  function handleDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (transformRef.current.scale > 1.4) {
+      resetTransform()
+      return
+    }
+
+    zoomAtPoint(kioskViewerDoubleTapScale, event.clientX, event.clientY)
+    setShowGestureHint(false)
+  }
+
+  useEffect(() => {
+    transformRef.current = transform
+
+    if (!imageRef.current) {
+      return
+    }
+
+    imageRef.current.style.setProperty('--kiosk-viewer-offset-x', `${transform.x}px`)
+    imageRef.current.style.setProperty('--kiosk-viewer-offset-y', `${transform.y}px`)
+    imageRef.current.style.setProperty('--kiosk-viewer-scale', String(transform.scale))
+  }, [transform])
+
+  useEffect(() => {
+    if (!asset) {
+      return undefined
+    }
+
+    const hintTimer = window.setTimeout(() => {
+      setShowGestureHint(false)
+    }, 4800)
+
+    return () => window.clearTimeout(hintTimer)
+  }, [asset])
+
+  useEffect(() => {
+    if (!asset) {
+      return undefined
+    }
+
+    document.addEventListener('keydown', handleViewerKeyDown)
+    return () => document.removeEventListener('keydown', handleViewerKeyDown)
+  }, [asset, onClose])
+
+  useEffect(() => {
+    if (!asset) {
+      return undefined
+    }
+
+    const viewportMeta = document.querySelector('meta[name="viewport"]')
+    if (!(viewportMeta instanceof HTMLMetaElement)) {
+      return undefined
+    }
+
+    const previousContent = viewportMeta.content
+    viewportMeta.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover'
+
+    return () => {
+      viewportMeta.content = previousContent
+    }
+  }, [asset])
+
+  useEffect(() => {
+    if (!asset) {
+      return undefined
+    }
+
+    const stage = stageRef.current
+    if (!stage) {
+      return undefined
+    }
+
+    stage.addEventListener('wheel', handleViewerWheel, { passive: false })
+    return () => stage.removeEventListener('wheel', handleViewerWheel)
+  }, [asset])
+
+  useEffect(() => {
+    if (!asset) {
+      return undefined
+    }
+
+    const stage = stageRef.current
+    const image = imageRef.current
+    if (!stage || !image || typeof ResizeObserver === 'undefined') {
+      return undefined
+    }
+
+    const observer = new ResizeObserver(() => {
+      handleViewerResize()
+    })
+
+    observer.observe(stage)
+    observer.observe(image)
+
+    return () => observer.disconnect()
+  }, [asset])
+
+  useEffect(() => {
+    const pointers = pointersRef.current
+
+    return () => {
+      pointers.clear()
+      pinchDistanceRef.current = null
+      panOriginRef.current = null
+      pendingTransformRef.current = null
+
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current)
+      }
+    }
+  }, [])
+
+  if (!asset) {
+    return null
+  }
+
+  return (
+    <div className="kiosk-viewer-overlay" onClick={onClose}>
+      <div className="kiosk-viewer-dialog" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          className="kiosk-viewer-back-button"
+          onClick={onClose}
+          aria-label="Back to result"
+        >
+          <span aria-hidden="true">←</span>
+          <span>Back</span>
+        </button>
+        <div
+          className={`kiosk-viewer-stage ${transform.scale > 1 ? 'is-zoomed' : ''}`}
+          ref={stageRef}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerRelease}
+          onPointerCancel={handlePointerRelease}
+          onDoubleClick={handleDoubleClick}
+        >
+          <img
+            ref={imageRef}
+            src={asset.src}
+            alt={asset.title}
+            className="kiosk-viewer-image"
+            draggable={false}
+            decoding="async"
+            onLoad={() => commitTransform(transformRef.current, true)}
+          />
+          <div className="kiosk-viewer-caption">
+            <span>{asset.title}{asset.subtitle ? ` · ${asset.subtitle}` : ''}</span>
+            <strong>{Math.round(transform.scale * 100)}%</strong>
+          </div>
+          {showGestureHint ? (
+            <div className="kiosk-viewer-gesture-hint" aria-hidden="true">
+              Pinch to zoom. Double-tap resets. Tap outside to close.
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ImageLightbox({ asset, onClose }: { asset: LightboxAsset | null; onClose: () => void }) {
+  const [zoom, setZoom] = useState(1)
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const zoomClassName = `viewer-image is-zoom-${String(zoom).replace('.', '-')}`
+
+  useEffect(() => {
+    if (!asset) {
+      return undefined
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [asset, onClose])
+
+  if (!asset) {
+    return null
+  }
+
+  async function handleFullscreen() {
+    if (!dialogRef.current) {
+      return
+    }
+
+    if (document.fullscreenElement === dialogRef.current) {
+      await document.exitFullscreen()
+      return
+    }
+
+    await dialogRef.current.requestFullscreen()
+  }
+
+  return (
+    <div className="viewer-overlay" onClick={onClose}>
+      <div className="viewer-dialog" ref={dialogRef} onClick={(event) => event.stopPropagation()}>
+        <div className="viewer-toolbar">
+          <div className="viewer-copy">
+            <strong>{asset.title}</strong>
+            {asset.subtitle ? <span>{asset.subtitle}</span> : null}
+          </div>
+          <div className="viewer-actions">
+            <button className="secondary-button compact" onClick={() => setZoom((current) => Math.max(1, current - 0.25))}>
+              Zoom -
+            </button>
+            <button className="secondary-button compact" onClick={() => setZoom((current) => Math.min(4, current + 0.25))}>
+              Zoom +
+            </button>
+            <button className="secondary-button compact" onClick={() => setZoom(1)}>
+              Reset
+            </button>
+            <button className="secondary-button compact" onClick={() => void handleFullscreen()}>
+              Full Screen
+            </button>
+            <button className="danger-button compact" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
+        <div className="viewer-canvas">
+          <img src={asset.src} alt={asset.title} className={zoomClassName} />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function toWorkbookRow(room: Room | RoomForm) {
@@ -263,8 +942,6 @@ function getAssetDisplayName(path: string) {
   return fileName.replace(/\.[^.]+$/, '') || fileName || path
 }
 
-const kioskDigits = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const
-
 function isLikelyIpadDevice() {
   const userAgent = navigator.userAgent
   return /iPad/i.test(userAgent) || (/Macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1)
@@ -275,18 +952,39 @@ function KioskApp() {
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null)
   const [selectedTemplate, setSelectedTemplate] = useState<BuildingTemplate | null>(null)
   const [buildingTemplates, setBuildingTemplates] = useState<BuildingTemplate[]>([])
+  const [quickLinks, setQuickLinks] = useState<QuickLink[]>([])
   const [error, setError] = useState('')
+  const [suggestions, setSuggestions] = useState<Room[]>([])
   const [secondsLeft, setSecondsLeft] = useState(45)
   const [rating, setRating] = useState<number | null>(null)
-  const [comment, setComment] = useState('')
   const [feedbackSent, setFeedbackSent] = useState(false)
-  const [commentSent, setCommentSent] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
+  const [lockoutSecondsLeft, setLockoutSecondsLeft] = useState(0)
+  const [lightboxAsset, setLightboxAsset] = useState<LightboxAsset | null>(null)
   const resetTimeoutRef = useRef<number | null>(null)
+  const debounceRef = useRef<number | null>(null)
+  const kioskInputRef = useRef<HTMLInputElement | null>(null)
+  const selectedRoomRef = useRef<Room | null>(null)
+  const selectedTemplateRef = useRef<BuildingTemplate | null>(null)
+  const lightboxAssetRef = useRef<LightboxAsset | null>(null)
+  const liveSyncTimerRef = useRef<number | null>(null)
+  const refreshKioskContentRef = useRef<() => Promise<void>>(async () => {})
 
   useEffect(() => {
     document.title = 'PATHFINDER'
   }, [])
+
+  useEffect(() => {
+    selectedRoomRef.current = selectedRoom
+  }, [selectedRoom])
+
+  useEffect(() => {
+    selectedTemplateRef.current = selectedTemplate
+  }, [selectedTemplate])
+
+  useEffect(() => {
+    lightboxAssetRef.current = lightboxAsset
+  }, [lightboxAsset])
 
   useEffect(() => {
     document.body.classList.add('kiosk-mode')
@@ -342,6 +1040,100 @@ function KioskApp() {
   }, [])
 
   useEffect(() => {
+    void getQuickLinks()
+      .then(setQuickLinks)
+      .catch(() => setQuickLinks([]))
+  }, [])
+
+  refreshKioskContentRef.current = async () => {
+    const [templates, links] = await Promise.all([
+      getPublicBuildingTemplates().catch(() => []),
+      getQuickLinks().catch(() => []),
+    ])
+
+    setBuildingTemplates(templates)
+    setQuickLinks(links)
+
+    const currentRoom = selectedRoomRef.current
+    if (currentRoom) {
+      try {
+        const nextRoom = await getPublicRoom(currentRoom.usid)
+        setSelectedRoom(nextRoom)
+
+        if (lightboxAssetRef.current) {
+          setLightboxAsset({
+            src: resolveAssetUrl(nextRoom.image),
+            title: `${nextRoom.building} ${nextRoom.room}`,
+            subtitle: `Door ${nextRoom.door}`,
+          })
+        }
+      } catch {
+        setSelectedRoom(null)
+        setLightboxAsset(null)
+        setError('This destination was updated. Please search again.')
+      }
+
+      return
+    }
+
+    const currentTemplate = selectedTemplateRef.current
+    if (!currentTemplate) {
+      return
+    }
+
+    const nextTemplate = templates.find((template) => template.fileName === currentTemplate.fileName) ?? null
+    if (!nextTemplate) {
+      setSelectedTemplate(null)
+      setLightboxAsset(null)
+      setError('This plan was updated. Please open it again.')
+      return
+    }
+
+    setSelectedTemplate(nextTemplate)
+
+    if (lightboxAssetRef.current) {
+      setLightboxAsset({
+        src: resolveAssetUrl(nextTemplate.path),
+        title: nextTemplate.building,
+        subtitle: nextTemplate.fileName,
+      })
+    }
+  }
+
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') {
+      const fallbackTimer = window.setInterval(() => {
+        void refreshKioskContentRef.current()
+      }, 5000)
+
+      return () => window.clearInterval(fallbackTimer)
+    }
+
+    const eventSource = openKioskLiveUpdates()
+    const scheduleRefresh = () => {
+      if (liveSyncTimerRef.current) {
+        window.clearTimeout(liveSyncTimerRef.current)
+      }
+
+      liveSyncTimerRef.current = window.setTimeout(() => {
+        liveSyncTimerRef.current = null
+        void refreshKioskContentRef.current()
+      }, 120)
+    }
+
+    eventSource.addEventListener('sync', scheduleRefresh)
+
+    return () => {
+      if (liveSyncTimerRef.current) {
+        window.clearTimeout(liveSyncTimerRef.current)
+      }
+
+      eventSource.removeEventListener('sync', scheduleRefresh)
+      eventSource.close()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!selectedRoom && !selectedTemplate) {
       return undefined
     }
@@ -353,9 +1145,7 @@ function KioskApp() {
           setSelectedTemplate(null)
           setInput('')
           setRating(null)
-          setComment('')
           setFeedbackSent(false)
-          setCommentSent(false)
           return 45
         }
 
@@ -367,34 +1157,70 @@ function KioskApp() {
   }, [selectedRoom, selectedTemplate])
 
   useEffect(() => {
+    if (lockoutSecondsLeft <= 0) {
+      return undefined
+    }
+
+    const timer = window.setInterval(() => {
+      setLockoutSecondsLeft((current) => (current <= 1 ? 0 : current - 1))
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [lockoutSecondsLeft])
+
+  useEffect(() => {
     if (selectedRoom || selectedTemplate) {
       return undefined
     }
+
+    const focusTimer = window.setTimeout(() => {
+      kioskInputRef.current?.focus()
+    }, 120)
 
     if (resetTimeoutRef.current) {
       window.clearTimeout(resetTimeoutRef.current)
     }
 
-    if (input.length > 0 && input.length < 6) {
+    if (input.length > 0) {
       resetTimeoutRef.current = window.setTimeout(() => {
         setInput('')
-      }, 7000)
+      }, 12000)
     }
 
     return () => {
+      window.clearTimeout(focusTimer)
       if (resetTimeoutRef.current) {
         window.clearTimeout(resetTimeoutRef.current)
       }
     }
   }, [input, selectedRoom, selectedTemplate])
 
+  useEffect(() => {
+    if (suggestions.length === 0) {
+      return undefined
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setSuggestions([])
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [suggestions])
+
   async function runSearch(usid: string) {
     if (usid.length < 3) {
+      setError('Enter at least 3 characters.')
       return
     }
 
+    if (lockoutSecondsLeft > 0) return
+
     setIsSearching(true)
     setError('')
+    setSuggestions([])
 
     try {
       const room = await searchRoom(usid)
@@ -402,69 +1228,46 @@ function KioskApp() {
       setSelectedTemplate(null)
       setSecondsLeft(45)
       setRating(null)
-      setComment('')
       setFeedbackSent(false)
-      setCommentSent(false)
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'No USID found')
+      if (requestError instanceof ApiError && requestError.status === 429) {
+        setLockoutSecondsLeft(requestError.retryAfterSeconds ?? 300)
+      } else {
+        // 404: try fuzzy suggestions
+        try {
+          const result = await searchSuggest(usid)
+          setSuggestions(result.suggestions)
+        } catch {
+          // suggestions are optional
+        }
+      }
+      setError(requestError instanceof Error ? requestError.message : 'No room found')
     } finally {
       setIsSearching(false)
     }
   }
 
   function updateInput(nextValue: string) {
-    setInput(nextValue)
+    const sanitized = sanitizeKioskInput(nextValue)
+    setInput(sanitized)
     setError('')
-  }
+    setSuggestions([])
 
-  function appendDigit(digit: string) {
-    if (isSearching || input.length >= 6) {
-      return
+    if (debounceRef.current) window.clearTimeout(debounceRef.current)
+
+    if (sanitized.length >= 3 && lockoutSecondsLeft <= 0) {
+      debounceRef.current = window.setTimeout(() => {
+        void runSearch(sanitized)
+      }, 500)
     }
-
-    const nextValue = `${input}${digit}`.slice(0, 6)
-    updateInput(nextValue)
-
-    if (nextValue.length === 6) {
-      window.setTimeout(() => {
-        void runSearch(nextValue)
-      }, 90)
-    }
-  }
-
-  function removeLastDigit() {
-    if (isSearching || input.length === 0) {
-      return
-    }
-
-    updateInput(input.slice(0, -1))
-  }
-
-  function clearInput() {
-    if (isSearching || input.length === 0) {
-      return
-    }
-
-    updateInput('')
   }
 
   async function handleSmileyClick(value: number) {
     if (!selectedRoom || feedbackSent) return
     setRating(value)
     setFeedbackSent(true)
-    setSecondsLeft((current) => current + 15)
+    setSecondsLeft((current) => current + 10)
     await sendFeedback(selectedRoom.usid, value, '')
-  }
-
-  async function handleSendComment() {
-    if (!selectedRoom || !rating || commentSent) return
-    if (comment.trim().length > 0 && comment.trim().length < 10) {
-      setError('Comment must be at least 10 characters long')
-      return
-    }
-    if (comment.trim().length === 0) return
-    await sendFeedback(selectedRoom.usid, rating, comment.trim())
-    setCommentSent(true)
   }
 
   function resetView() {
@@ -472,11 +1275,11 @@ function KioskApp() {
     setSelectedTemplate(null)
     setInput('')
     setRating(null)
-    setComment('')
     setFeedbackSent(false)
-    setCommentSent(false)
     setError('')
+    setSuggestions([])
     setSecondsLeft(45)
+    setLightboxAsset(null)
   }
 
   function handleTemplatePreview(template: BuildingTemplate) {
@@ -485,88 +1288,140 @@ function KioskApp() {
     setError('')
     setSecondsLeft(45)
     setRating(null)
-    setComment('')
     setFeedbackSent(false)
-    setCommentSent(false)
   }
+
+  function handleOpenLightbox() {
+    if (selectedRoom?.image) {
+      setLightboxAsset({
+        src: resolveAssetUrl(selectedRoom.image),
+        title: `${selectedRoom.building} ${selectedRoom.room}`,
+        subtitle: `Door ${selectedRoom.door}`,
+      })
+      return
+    }
+
+    if (selectedTemplate) {
+      setLightboxAsset({
+        src: resolveAssetUrl(selectedTemplate.path),
+        title: selectedTemplate.building,
+        subtitle: selectedTemplate.fileName,
+      })
+    }
+  }
+
+  function handleSuggestionSelect(room: Room) {
+    setError('')
+    setSuggestions([])
+    setInput(room.usid)
+    void runSearch(room.usid)
+  }
+
+  const resultImageSrc = selectedRoom?.image
+    ? resolveAssetUrl(selectedRoom.image)
+    : selectedTemplate
+      ? resolveAssetUrl(selectedTemplate.path)
+      : ''
+  const resultImageAlt = selectedRoom
+    ? `Route to room ${selectedRoom.room}`
+    : selectedTemplate
+      ? selectedTemplate.building
+      : 'Selected route image'
+  const hasResultImage = resultImageSrc.length > 0
 
   return (
     <main className="kiosk-shell">
+      <div className="kiosk-rotate-overlay" role="status" aria-live="polite">
+        <strong>Rotate iPad to landscape</strong>
+        <span>The kiosk is optimized for horizontal use.</span>
+      </div>
       {!selectedRoom && !selectedTemplate ? (
         <section className="kiosk-home">
           <div className="kiosk-home-content">
-            <div className="kiosk-top-row">
-              <div className="brand-strip" aria-label="Pathfinder and Equinix branding">
-                <img src="/logo.jpg" className="brand-logo" alt="Pathfinder logo" />
-                <span className="brand-separator" aria-hidden="true" />
-                <div className="partner-wordmark" aria-label="Equinix">EQUINIX</div>
+            <div className="kiosk-top-row kiosk-top-row--basic">
+              <div className="kiosk-home-heading">
+                <img src="/header.jpg" className="hero-image hero-image--basic" alt="Office directions" />
+                <p className="kiosk-home-kicker">Pathfinder</p>
+                <h1 className="kiosk-home-title">Find your destination</h1>
+                <p className="kiosk-home-subtitle">Enter a room code to open the route.</p>
               </div>
-              <img src="/header.jpg" className="hero-image" alt="Office directions" />
-            </div>
-            <p className="search-label">Enter the last six digits of your USID.</p>
-
-            <div className="search-area">
-              <div className="kiosk-display" aria-live="polite" aria-label="USID input display">
-                <span className={`kiosk-display-value ${input ? 'is-filled' : ''}`}>{input || '000000'}</span>
-                <span className="kiosk-display-caption">Digits entered: {input.length}/6</span>
-              </div>
-
-              <div className="kiosk-keypad" aria-label="Numeric keypad">
-                {kioskDigits.slice(0, 9).map((digit) => (
-                  <button
-                    key={digit}
-                    type="button"
-                    className="keypad-button"
-                    onClick={() => appendDigit(digit)}
-                    disabled={isSearching || input.length >= 6}
-                    aria-label={`Enter ${digit}`}
-                  >
-                    {digit}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="keypad-button keypad-button--secondary"
-                  onClick={clearInput}
-                  disabled={isSearching || input.length === 0}
-                >
-                  Clear
-                </button>
-                <button
-                  type="button"
-                  className="keypad-button"
-                  onClick={() => appendDigit(kioskDigits[9])}
-                  disabled={isSearching || input.length >= 6}
-                  aria-label="Enter 0"
-                >
-                  0
-                </button>
-                <button
-                  type="button"
-                  className="keypad-button keypad-button--secondary"
-                  onClick={removeLastDigit}
-                  disabled={isSearching || input.length === 0}
-                >
-                  Delete
-                </button>
-              </div>
-
-              <p className="search-helper-text">The search starts automatically after the 6th digit.</p>
-              {isSearching ? <p className="status-message is-info">Searching...</p> : null}
-              {error ? <p className="error-message">{error}</p> : null}
             </div>
 
-            {buildingTemplates.length > 0 ? (
-              <section className="kiosk-template-section" aria-label="Building and phase shortcuts">
+            <div className="search-area search-area--native">
+              <div className="kiosk-entry-card" onClick={() => kioskInputRef.current?.focus()}>
+                <div className="kiosk-entry-copy">
+                  <p className="search-label">Find your destination</p>
+                  <p className="search-helper-text">Type your room code — search starts automatically.</p>
+                </div>
+
+                <input
+                  ref={kioskInputRef}
+                  className="kiosk-native-input"
+                  type="text"
+                  value={input}
+                  inputMode="text"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  spellCheck={false}
+                  enterKeyHint="search"
+                  maxLength={16}
+                  placeholder="Destination code"
+                  aria-label="Destination code"
+                  disabled={isSearching || lockoutSecondsLeft > 0}
+                  onChange={(event) => updateInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      if (debounceRef.current) window.clearTimeout(debounceRef.current)
+                      event.preventDefault()
+                      void runSearch(input)
+                    }
+                  }}
+                />
+
+                <div className="kiosk-entry-meta">
+                  <span className="kiosk-display-caption">{input.length > 0 ? `${input.length}/16` : 'A-Z · 0-9'}</span>
+                  {lockoutSecondsLeft > 0 ? <span className="kiosk-lockout-pill">Locked for {formatLockout(lockoutSecondsLeft)}</span> : null}
+                </div>
+              </div>
+
+              {isSearching ? <p className="status-message is-info">Searching…</p> : null}
+              {error && !isSearching ? (
+                <div className="kiosk-error-block">
+                  <p className="error-message">{error}</p>
+                </div>
+              ) : null}
+            </div>
+
+            {(quickLinks.length > 0 || buildingTemplates.filter((t) => t.showOnHome).length > 0) ? (
+              <section className="kiosk-template-section" aria-label="Quick links">
+                <div className="kiosk-template-heading">
+                  <p>Quick access</p>
+                </div>
                 <div className="kiosk-template-grid">
-                  {buildingTemplates.map((template) => (
+                  {quickLinks.map((ql) => (
+                    <button
+                      key={ql.id}
+                      type="button"
+                      className="kiosk-template-button"
+                      onClick={() => {
+                        setInput(ql.usid)
+                        void runSearch(ql.usid)
+                      }}
+                    >
+                      <span className="template-badge">{getTemplateBadgeLabel(ql.label)}</span>
+                      <span>{ql.label}</span>
+                    </button>
+                  ))}
+                  {quickLinks.length === 0 && buildingTemplates.filter((t) => t.showOnHome).map((template) => (
                     <button
                       key={template.fileName}
                       type="button"
                       className="kiosk-template-button"
                       onClick={() => handleTemplatePreview(template)}
                     >
-                      {template.building}
+                      <span className="template-badge">{getTemplateBadgeLabel(template.building)}</span>
+                      <span>{template.building}</span>
                     </button>
                   ))}
                 </div>
@@ -575,113 +1430,149 @@ function KioskApp() {
           </div>
         </section>
       ) : (
-        <section className="result-shell">
-          <div className="result-content">
+        <section className={`result-shell ${selectedRoom ? 'result-shell--room' : 'result-shell--template'}`}>
+          <div className={`result-content ${selectedRoom ? 'result-content--room' : 'result-content--template'}`}>
             <div className="result-header">
               <button className="back-button" onClick={resetView} aria-label="Back to search">
                 ←
               </button>
-              <div className="timer-box">
-                <span>{secondsLeft}</span>s
-              </div>
-            </div>
 
-            <h1 className="destination-title">{selectedRoom ? 'YOUR DESTINATION' : 'SITE PLAN'}</h1>
-            <p className="destination-subtitle">
-              {selectedRoom ? 'The destination is highlighted in green' : 'Selected building or phase overview'}
-            </p>
-
-            {selectedRoom ? (
-              <div className="info-grid">
-                <article className="tile">
-                  <span className="tile-label">Building</span>
-                  <strong className="tile-value">{selectedRoom.building}</strong>
-                </article>
-                <article className="tile">
-                  <span className="tile-label">Level</span>
-                  <strong className="tile-value">{selectedRoom.level}</strong>
-                </article>
-                <article className="tile">
-                  <span className="tile-label">Room</span>
-                  <strong className="tile-value">{selectedRoom.room}</strong>
-                </article>
-                <article className="tile">
-                  <span className="tile-label">Door</span>
-                  <strong className="tile-value">{selectedRoom.door}</strong>
-                </article>
-              </div>
-            ) : selectedTemplate ? (
-              <div className="info-grid preview-info-grid">
-                <article className="tile">
-                  <span className="tile-label">Area</span>
-                  <strong className="tile-value">{selectedTemplate.building}</strong>
-                </article>
-              </div>
-            ) : null}
-
-            <div className="result-visual">
-              {selectedRoom?.image ? (
-                <img className="result-image" src={resolveAssetUrl(selectedRoom.image)} alt={`Route to room ${selectedRoom.room}`} />
-              ) : null}
-              {!selectedRoom && selectedTemplate ? (
-                <img className="result-image" src={resolveAssetUrl(selectedTemplate.path)} alt={selectedTemplate.building} />
-              ) : null}
-            </div>
-
-            <p className="pickup-hint">
-              {selectedRoom ? 'Pick up keys or cards if needed.' : 'Use back to return to the USID search.'}
-            </p>
-
-            {selectedRoom ? (
-              <>
-                <div className="feedback-smileys">
-                  {[
-                    { value: 1, emoji: '😡', label: 'Very bad' },
-                    { value: 2, emoji: '😕', label: 'Bad' },
-                    { value: 3, emoji: '😐', label: 'Okay' },
-                    { value: 4, emoji: '🙂', label: 'Good' },
-                    { value: 5, emoji: '😍', label: 'Great' },
-                  ].map((item) => (
-                    <button
-                      key={item.value}
-                      className={`smiley-button ${rating === item.value ? 'is-selected' : ''}`}
-                      onClick={() => void handleSmileyClick(item.value)}
-                      disabled={feedbackSent}
-                      aria-label={item.label}
-                    >
-                      {item.emoji}
-                    </button>
-                  ))}
-                </div>
-
-                {feedbackSent && !commentSent ? (
-                  <div className="feedback-comment-row">
-                    <p className="thank-you">Thank you!</p>
-                    <input
-                      className="feedback-input"
-                      type="text"
-                      value={comment}
-                      onChange={(event) => setComment(event.target.value)}
-                      placeholder="Optional comment (min 10 chars)"
-                    />
-                    <button className="primary-button compact" onClick={() => void handleSendComment()} disabled={comment.trim().length === 0}>
-                      Send
-                    </button>
-                  </div>
+              <div className="result-header-info" aria-label={selectedRoom ? 'Destination details' : 'Selected plan details'}>
+                {selectedRoom ? (
+                  <>
+                    <span className="result-inline-chip">
+                      <strong>Building</strong>
+                      <span>{selectedRoom.building}</span>
+                    </span>
+                    <span className="result-inline-chip">
+                      <strong>Level</strong>
+                      <span>{selectedRoom.level}</span>
+                    </span>
+                    <span className="result-inline-chip">
+                      <strong>Room</strong>
+                      <span>{selectedRoom.room}</span>
+                    </span>
+                    <span className="result-inline-chip">
+                      <strong>Door</strong>
+                      <span>{selectedRoom.door}</span>
+                    </span>
+                  </>
+                ) : selectedTemplate ? (
+                  <>
+                    <span className="result-inline-chip result-inline-chip--quiet">
+                      <strong>Site plan</strong>
+                    </span>
+                    <span className="result-inline-chip">
+                      <strong>Area</strong>
+                      <span>{selectedTemplate.building}</span>
+                    </span>
+                  </>
                 ) : null}
+              </div>
 
-                {commentSent ? <p className="thank-you">Thank you for your comment!</p> : null}
-              </>
-            ) : null}
+              <div className="result-header-actions">
+                <div className="timer-box">
+                  <span>{secondsLeft}</span>s
+                </div>
+              </div>
+            </div>
+
+            {hasResultImage ? (
+              <button
+                type="button"
+                className="result-visual result-visual--interactive"
+                onClick={handleOpenLightbox}
+                aria-label="Open interactive route viewer"
+              >
+                <img
+                  className="result-image"
+                  src={resultImageSrc}
+                  alt={resultImageAlt}
+                  loading="eager"
+                  decoding="async"
+                  draggable={false}
+                />
+                <span className="result-visual-hint">Tap to zoom</span>
+              </button>
+            ) : (
+              <div className="result-visual result-visual--empty">
+                <div className="result-visual-empty-copy">
+                  <strong>No route image available</strong>
+                  <span>Return to search or ask a team member for assistance.</span>
+                </div>
+              </div>
+            )}
+
+            <div className="result-meta">
+              {selectedRoom ? (
+                <section className="result-feedback-panel" aria-label="Route feedback">
+                  <div className="result-feedback-copy">
+                    <p className="result-feedback-title">Was this route helpful?</p>
+                    {feedbackSent ? <p className="thank-you">Thank you for your feedback.</p> : <p className="result-feedback-hint">Tap one option to send quick feedback.</p>}
+                  </div>
+
+                  <div className="feedback-smileys feedback-smileys--icon-only">
+                    {feedbackOptions.map((item) => (
+                      <button
+                        key={item.value}
+                        className={`smiley-button smiley-button--${item.tone} ${rating === item.value ? 'is-selected' : ''}`}
+                        onClick={() => void handleSmileyClick(item.value)}
+                        disabled={feedbackSent}
+                        aria-label={item.label}
+                      >
+                        <FeedbackGlyph value={item.value} />
+                        <span>{item.shortLabel}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </div>
           </div>
         </section>
       )}
+      {suggestions.length > 0 ? (
+        <div className="kiosk-suggestion-modal-overlay" onClick={() => setSuggestions([])}>
+          <div
+            className="kiosk-suggestion-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Suggestions"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="kiosk-suggestion-modal-head">
+              <button type="button" className="kiosk-suggestion-close" onClick={() => setSuggestions([])} aria-label="Close suggestions">
+                Close
+              </button>
+            </div>
+            <div className="kiosk-suggestion-modal-grid">
+              {suggestions.map((room) => (
+                <button
+                  key={room.usid}
+                  type="button"
+                  className="kiosk-suggestion-btn kiosk-suggestion-btn--modal"
+                  onClick={() => handleSuggestionSelect(room)}
+                >
+                  <span className="kiosk-suggestion-usid">{room.usid}</span>
+                  <span className="kiosk-suggestion-meta">{room.building} · {room.room}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {lightboxAsset ? (
+        <KioskImageViewer
+          key={`${lightboxAsset.src}:${lightboxAsset.title}:${lightboxAsset.subtitle ?? ''}`}
+          asset={lightboxAsset}
+          onClose={() => setLightboxAsset(null)}
+        />
+      ) : null}
     </main>
   )
 }
 
 function AdminApp() {
-  const [showSplash, setShowSplash] = useState(true);
   const [adminTheme, setAdminTheme] = useState<AdminTheme>(() => {
     if (typeof window === 'undefined') {
       return 'dark'
@@ -716,8 +1607,16 @@ function AdminApp() {
   const [isUploadingImages, setIsUploadingImages] = useState(false)
   const [isUploadingTemplates, setIsUploadingTemplates] = useState(false)
   const [roomView, setRoomView] = useState<'grid' | 'table'>('table')
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'rooms' | 'import' | 'templates' | 'images' | 'reports'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'rooms' | 'import' | 'images' | 'reports' | 'quicklinks'>('dashboard')
   const [chartData, setChartData] = useState<ChartData | null>(null)
+  const [ibxConfig, setIbxConfig] = useState<IbxConfig | null>(null)
+  const [adminQuickLinks, setAdminQuickLinks] = useState<QuickLink[]>([])
+  const [quickLinkForm, setQuickLinkForm] = useState<QuickLinkForm>(emptyQuickLinkForm)
+  const [editingQuickLinkId, setEditingQuickLinkId] = useState<number | null>(null)
+  const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([])
+  const [selectedImageIds, setSelectedImageIds] = useState<string[]>([])
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([])
+  const [lightboxAsset, setLightboxAsset] = useState<LightboxAsset | null>(null)
   const [modal, setModal] = useState<{ title: string; message: string; onConfirm?: () => void } | null>(null)
   const modalRejectRef = useRef<(() => void) | null>(null)
 
@@ -775,13 +1674,15 @@ function AdminApp() {
       return
     }
 
-    void Promise.all([getRooms(), getFeedback(), getReport(), getBuildingTemplates(), getChartData()])
-      .then(([roomsResponse, feedbackResponse, reportResponse, templateResponse, charts]) => {
+    void Promise.all([getRooms(), getFeedback(), getReport(), getBuildingTemplates(), getChartData(), getIbxConfig(), getAdminQuickLinks()])
+      .then(([roomsResponse, feedbackResponse, reportResponse, templateResponse, charts, ibxResponse, qlResponse]) => {
         setRooms(roomsResponse)
         setFeedback(feedbackResponse)
         setReport(reportResponse)
         setBuildingTemplates(templateResponse)
         setChartData(charts)
+        setIbxConfig(ibxResponse)
+        setAdminQuickLinks(qlResponse)
         setTemplateRenameDrafts((current) => {
           const nextDrafts = { ...current }
           for (const template of templateResponse) {
@@ -836,36 +1737,6 @@ function AdminApp() {
     )
   }, [rooms, searchTerm])
 
-  const matchingBuildingTemplates = useMemo(() => {
-    const buildingKey = normalizeTemplateLookup(roomForm.building)
-
-    if (!buildingKey) {
-      return buildingTemplates
-    }
-
-    return buildingTemplates
-      .map((template) => {
-        const templateKey = normalizeTemplateLookup(template.building)
-        const isExact = templateKey === buildingKey
-        const isPartial = templateKey.includes(buildingKey) || buildingKey.includes(templateKey)
-
-        return {
-          template,
-          isExact,
-          isPartial,
-        }
-      })
-      .filter((entry) => entry.isExact || entry.isPartial)
-      .sort((left, right) => {
-        if (left.isExact !== right.isExact) {
-          return Number(right.isExact) - Number(left.isExact)
-        }
-
-        return left.template.building.localeCompare(right.template.building)
-      })
-      .map((entry) => entry.template)
-  }, [buildingTemplates, roomForm.building])
-
   const selectedRoomTemplate = useMemo(
     () => buildingTemplates.find((template) => template.path === roomForm.image) ?? null,
     [buildingTemplates, roomForm.image],
@@ -905,7 +1776,7 @@ function AdminApp() {
   const roomImagePickerItems = useMemo(() => imagePageData.items.slice(0, 8), [imagePageData.items])
 
   const totalSearches = report.reduce((sum, entry) => sum + entry.searches, 0)
-  const averageRating = feedback.length > 0 ? (feedback.reduce((sum, entry) => sum + entry.rating, 0) / feedback.length).toFixed(1) : '–'
+  const averageRating = feedback.length > 0 ? (feedback.reduce((sum, entry) => sum + normalizeFeedbackRating(entry.rating), 0) / feedback.length).toFixed(1) : '–'
   const visibleTemplateCount = buildingTemplates.filter((template) => template.showOnHome).length
   const hiddenTemplateCount = buildingTemplates.length - visibleTemplateCount
   const topSearch = report.reduce<ReportEntry | null>((currentTop, entry) => {
@@ -921,6 +1792,72 @@ function AdminApp() {
     return latest
   }, null)
 
+  const allVisibleRoomsSelected = filteredRooms.length > 0 && filteredRooms.every((room) => selectedRoomIds.includes(room.usid))
+  const allVisibleTemplatesSelected = buildingTemplates.length > 0 && buildingTemplates.every((template) => selectedTemplateIds.includes(template.fileName))
+  const allVisibleImagesSelected = imagePageData.items.length > 0 && imagePageData.items.every((image) => selectedImageIds.includes(image.fileName))
+
+  const quickLinksByBuilding = useMemo(() => {
+    const map = new Map<string, { building: string; quickLinks: QuickLink[] }>()
+
+    for (const ql of adminQuickLinks) {
+      const room = rooms.find((r) => r.usid === ql.usid)
+      const buildingKey = normalizeTemplateLookup(room?.building ?? '')
+
+      if (!room?.building || !buildingKey) {
+        continue
+      }
+
+      const existing = map.get(buildingKey)
+      map.set(buildingKey, {
+        building: existing?.building ?? room.building,
+        quickLinks: [...(existing?.quickLinks ?? []), ql],
+      })
+    }
+
+    return map
+  }, [adminQuickLinks, rooms])
+
+  const qlWithRoomAndTemplate = useMemo(() => {
+    return adminQuickLinks.map((ql) => {
+      const room = rooms.find((r) => r.usid === ql.usid) ?? null
+      const buildingKey = normalizeTemplateLookup(room?.building ?? '')
+      const template = room
+        ? buildingTemplates.find((t) => normalizeTemplateLookup(t.building) === buildingKey) ?? null
+        : null
+      return { ql, room, template }
+    })
+  }, [adminQuickLinks, rooms, buildingTemplates])
+
+  const floorPlanCards = useMemo(() => {
+    const cards = new Map<string, { building: string; template: BuildingTemplate | null; quickLinks: QuickLink[] }>()
+
+    for (const template of buildingTemplates) {
+      const buildingKey = normalizeTemplateLookup(template.building)
+      cards.set(buildingKey, {
+        building: template.building,
+        template,
+        quickLinks: quickLinksByBuilding.get(buildingKey)?.quickLinks ?? [],
+      })
+    }
+
+    for (const [buildingKey, entry] of quickLinksByBuilding.entries()) {
+      const existing = cards.get(buildingKey)
+      cards.set(buildingKey, {
+        building: existing?.building ?? entry.building,
+        template: existing?.template ?? null,
+        quickLinks: entry.quickLinks,
+      })
+    }
+
+    return Array.from(cards.values()).sort((left, right) => {
+      if ((left.quickLinks.length > 0) !== (right.quickLinks.length > 0)) {
+        return Number(right.quickLinks.length > 0) - Number(left.quickLinks.length > 0)
+      }
+
+      return left.building.localeCompare(right.building)
+    })
+  }, [buildingTemplates, quickLinksByBuilding])
+
   async function refreshRoomsAndFeedback() {
     const [roomsResponse, feedbackResponse, reportResponse] = await Promise.all([
       getRooms(),
@@ -930,6 +1867,18 @@ function AdminApp() {
     setRooms(roomsResponse)
     setFeedback(feedbackResponse)
     setReport(reportResponse)
+  }
+
+  async function refreshReportingAndCharts() {
+    const [feedbackResponse, reportResponse, charts] = await Promise.all([
+      getFeedback(),
+      getReport(),
+      getChartData(),
+    ])
+
+    setFeedback(feedbackResponse)
+    setReport(reportResponse)
+    setChartData(charts)
   }
 
   async function refreshBuildingTemplates() {
@@ -983,6 +1932,14 @@ function AdminApp() {
     setImagePageData(createEmptyImagePage())
     setImageRenameDrafts({})
     setTemplateRenameDrafts({})
+    setIbxConfig(null)
+    setAdminQuickLinks([])
+    setQuickLinkForm(emptyQuickLinkForm)
+    setEditingQuickLinkId(null)
+    setSelectedRoomIds([])
+    setSelectedImageIds([])
+    setSelectedTemplateIds([])
+    setLightboxAsset(null)
   }
 
   async function handleSaveRoom() {
@@ -1014,6 +1971,27 @@ function AdminApp() {
         tone: 'error',
         message: getErrorMessage(error, 'Room could not be deleted.'),
       })
+    }
+  }
+
+  async function handleBulkDeleteRooms() {
+    if (selectedRoomIds.length === 0) {
+      setStatusNotice({ tone: 'info', message: 'Select at least one room.' })
+      return
+    }
+
+    const confirmed = await showConfirmModal('Delete Rooms', `Delete ${selectedRoomIds.length} selected rooms? This cannot be undone.`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      const result = await bulkDeleteRooms(selectedRoomIds)
+      setSelectedRoomIds([])
+      setStatusNotice({ tone: 'success', message: `${result.deleted} rooms deleted.` })
+      await refreshRoomsAndFeedback()
+    } catch (error) {
+      setStatusNotice({ tone: 'error', message: getErrorMessage(error, 'Rooms could not be deleted.') })
     }
   }
 
@@ -1183,6 +2161,27 @@ function AdminApp() {
     }
   }
 
+  async function handleBulkDeleteImages() {
+    if (selectedImageIds.length === 0) {
+      setStatusNotice({ tone: 'info', message: 'Select at least one image.' })
+      return
+    }
+
+    const confirmed = await showConfirmModal('Delete Images', `Delete ${selectedImageIds.length} selected images? This cannot be undone.`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      const result = await bulkDeleteImages(selectedImageIds)
+      setSelectedImageIds([])
+      setStatusNotice({ tone: 'success', message: `${result.deleted} images deleted.` })
+      await Promise.all([refreshRoomsAndFeedback(), refreshImages(imagePage, imageQuery)])
+    } catch (error) {
+      setStatusNotice({ tone: 'error', message: getErrorMessage(error, 'Images could not be deleted.') })
+    }
+  }
+
   async function handleDeleteBuildingTemplate(template: BuildingTemplate) {
     const confirmed = await showConfirmModal('Delete Template', `Delete building template ${template.building}? This cannot be undone.`)
     if (!confirmed) {
@@ -1201,6 +2200,27 @@ function AdminApp() {
         tone: 'error',
         message: getErrorMessage(error, 'Building template could not be deleted.'),
       })
+    }
+  }
+
+  async function handleBulkDeleteTemplates() {
+    if (selectedTemplateIds.length === 0) {
+      setStatusNotice({ tone: 'info', message: 'Select at least one template.' })
+      return
+    }
+
+    const confirmed = await showConfirmModal('Delete Templates', `Delete ${selectedTemplateIds.length} selected templates? This cannot be undone.`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      const result = await bulkDeleteBuildingTemplates(selectedTemplateIds)
+      setSelectedTemplateIds([])
+      setStatusNotice({ tone: 'success', message: `${result.deleted} templates deleted.` })
+      await refreshBuildingTemplates()
+    } catch (error) {
+      setStatusNotice({ tone: 'error', message: getErrorMessage(error, 'Templates could not be deleted.') })
     }
   }
 
@@ -1236,6 +2256,36 @@ function AdminApp() {
     }
   }
 
+  async function handleClearFeedbackData() {
+    const confirmed = await showConfirmModal('Delete Feedback Data', 'Delete all feedback data? This cannot be undone.')
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await clearFeedback()
+      setStatusNotice({ tone: 'success', message: 'Feedback data deleted.' })
+      await refreshReportingAndCharts()
+    } catch (error) {
+      setStatusNotice({ tone: 'error', message: getErrorMessage(error, 'Feedback data could not be deleted.') })
+    }
+  }
+
+  async function handleClearSearchData() {
+    const confirmed = await showConfirmModal('Delete Search Data', 'Delete all search analytics data? This cannot be undone.')
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await clearAnalytics()
+      setStatusNotice({ tone: 'success', message: 'Search analytics deleted.' })
+      await refreshReportingAndCharts()
+    } catch (error) {
+      setStatusNotice({ tone: 'error', message: getErrorMessage(error, 'Search analytics could not be deleted.') })
+    }
+  }
+
   function handleSelectRoomImage(image: UploadedImage) {
     setRoomForm((current) => ({ ...current, image: image.path }))
     setShowRoomImagePicker(false)
@@ -1257,172 +2307,69 @@ function AdminApp() {
     setStatusNotice({ tone: 'info', message: 'Room image cleared.' })
   }
 
-  function handleUseBuildingTemplate(template: BuildingTemplate) {
-    setRoomForm((current) => ({
-      ...current,
-      building: current.building || template.building,
-      image: template.path,
-    }))
-    setActiveTab('rooms')
-    setStatusNotice({ tone: 'info', message: `Building template ${template.building} selected.` })
+  function openLightbox(asset: LightboxAsset) {
+    setLightboxAsset(asset)
   }
 
-  if (showSplash) {
-    return <SplashScreen onFinished={() => setShowSplash(false)} />;
+  async function refreshQuickLinks() {
+    const links = await getAdminQuickLinks()
+    setAdminQuickLinks(links)
+  }
+
+  async function handleSaveQuickLink() {
+    if (!quickLinkForm.label.trim() || !quickLinkForm.usid.trim()) {
+      setStatusNotice({ tone: 'error', message: 'Label and room code are required.' })
+      return
+    }
+
+    try {
+      if (editingQuickLinkId !== null) {
+        await updateQuickLink(editingQuickLinkId, quickLinkForm)
+        setStatusNotice({ tone: 'success', message: 'Quick link updated.' })
+      } else {
+        await saveQuickLink(quickLinkForm)
+        setStatusNotice({ tone: 'success', message: 'Quick link added.' })
+      }
+      setQuickLinkForm(emptyQuickLinkForm)
+      setEditingQuickLinkId(null)
+      await refreshQuickLinks()
+    } catch (error) {
+      setStatusNotice({ tone: 'error', message: getErrorMessage(error, 'Could not save quick link.') })
+    }
+  }
+
+  async function handleDeleteQuickLink(id: number) {
+    const confirmed = await showConfirmModal('Delete Quick Link', 'Delete this quick link? This cannot be undone.')
+    if (!confirmed) return
+    try {
+      await deleteQuickLink(id)
+      setStatusNotice({ tone: 'success', message: 'Quick link deleted.' })
+      await refreshQuickLinks()
+    } catch (error) {
+      setStatusNotice({ tone: 'error', message: getErrorMessage(error, 'Could not delete quick link.') })
+    }
+  }
+
+  function handleEditQuickLink(ql: QuickLink) {
+    setEditingQuickLinkId(ql.id)
+    setQuickLinkForm({ label: ql.label, usid: ql.usid, sortOrder: ql.sortOrder })
   }
 
   if (!authenticated) {
     return (
-      <main className="admin-login-shell" data-admin-theme={adminTheme}>
-        <section className="admin-login-stage">
-          <aside className="admin-login-showcase">
-            <div className="admin-login-showcase-glow" aria-hidden="true" />
-
-            <div className="admin-login-showcase-top">
-              <div className="admin-login-brand">
-                <img src="/admin-monitor-logo.svg" className="admin-login-brand-logo" alt="" />
-                <div className="admin-login-brand-copy">
-                  <span>Pathfinder route intelligence</span>
-                  <strong>Control layer</strong>
-                </div>
-              </div>
-
-              <div className="admin-login-status-chip">
-                <span className="admin-login-status-dot" aria-hidden="true" />
-                <span>Route graph online</span>
-              </div>
-            </div>
-
-            <span className="admin-eyebrow">PATHFINDER // CONTROL</span>
-            <h1>Direct rooms, plans and media from one focused command layer.</h1>
-            <p>
-              A clear admin entry point for room updates, template visibility and operational reporting.
-            </p>
-
-            <div className="admin-login-route-tags" aria-label="Pathfinder capabilities">
-              {['Rooms', 'Templates', 'Reports'].map((tag) => (
-                <span key={tag} className="admin-login-route-tag">
-                  {tag}
-                </span>
-              ))}
-            </div>
-
-            <div className="admin-login-visual" aria-hidden="true">
-              <img src="/DLevel1.jpg" className="admin-login-visual-image" alt="" />
-              <div className="admin-login-visual-grid" />
-              <div className="admin-login-visual-vignette" />
-              <span className="admin-login-visual-scan" />
-              <span className="admin-login-visual-route admin-login-visual-route--one" />
-              <span className="admin-login-visual-route admin-login-visual-route--two" />
-              <span className="admin-login-visual-route admin-login-visual-route--three" />
-              <span className="admin-login-visual-node admin-login-visual-node--start" />
-              <span className="admin-login-visual-node admin-login-visual-node--mid" />
-              <span className="admin-login-visual-node admin-login-visual-node--target" />
-
-              <div className="admin-login-visual-card admin-login-visual-card--left">
-                <span>Route preview</span>
-                <strong>Navigation stays aligned from entry point to destination.</strong>
-              </div>
-            </div>
-
-            <div className="admin-login-feature-list">
-              <article className="admin-feature-card">
-                <span>Templates</span>
-                <strong>Choose which plans appear on the kiosk.</strong>
-              </article>
-              <article className="admin-feature-card">
-                <span>Media</span>
-                <strong>Manage uploads and assignments in one place.</strong>
-              </article>
-              <article className="admin-feature-card">
-                <span>Reporting</span>
-                <strong>Review searches, feedback and exports quickly.</strong>
-              </article>
-            </div>
-          </aside>
-
-          <section className={`admin-login-card ${loginError ? 'is-error' : ''}`}>
-            <div className="admin-login-card-head">
-              <div>
-                <span className="admin-eyebrow">Secure Access</span>
-                <h2>Admin Login</h2>
-              </div>
-
-              <span className="admin-login-card-badge">Route Ops</span>
-            </div>
-
-            <p>Authenticate to enter the command center for Pathfinder operations.</p>
-
-            <div className="admin-login-signal-row" aria-hidden="true">
-              <span className="admin-login-signal-pill">Spatial auth</span>
-              <span className="admin-login-signal-pill">Template control</span>
-              <span className="admin-login-signal-pill">Live reporting</span>
-            </div>
-
-            <label className={`admin-field ${loginError ? 'is-error' : ''}`}>
-              <span>Password</span>
-              {loginError ? (
-                <input
-                  className="admin-password is-error"
-                  type="password"
-                  placeholder="Enter admin password"
-                  value={password}
-                  aria-invalid="true"
-                  onChange={(event) => setPassword(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      void handleLogin()
-                    }
-                  }}
-                />
-              ) : (
-                <input
-                  className="admin-password"
-                  type="password"
-                  placeholder="Enter admin password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      void handleLogin()
-                    }
-                  }}
-                />
-              )}
-            </label>
-
-            {loginError ? (
-              <div className="admin-login-error-banner" role="alert" aria-live="assertive">
-                {loginError}
-              </div>
-            ) : null}
-
-            <div className="admin-login-action-row">
-              <button className="primary-button" onClick={() => void handleLogin()}>
-                Enter command center
-              </button>
-
-              <button className="secondary-button theme-toggle" onClick={toggleAdminTheme}>
-                Theme: {adminTheme === 'dark' ? 'Dark' : 'Light'}
-              </button>
-            </div>
-
-            <div className="admin-login-meta">
-              <span>Protected admin route</span>
-              <span>Room, template and report access</span>
-            </div>
-
-            <div className="admin-login-audio-hint" aria-hidden="true">
-              <span className="admin-login-audio-bars">
-                <span />
-                <span />
-                <span />
-              </span>
-              <span>Theme toggle and access control are available immediately after login.</span>
-            </div>
-          </section>
-        </section>
-      </main>
+      <LoginPage
+        theme={adminTheme}
+        password={password}
+        loginError={loginError}
+        onPasswordChange={(nextPassword) => {
+          setPassword(nextPassword)
+          if (loginError) {
+            setLoginError('')
+          }
+        }}
+        onSubmit={() => void handleLogin()}
+        onToggleTheme={toggleAdminTheme}
+      />
     )
   }
 
@@ -1430,8 +2377,8 @@ function AdminApp() {
     { key: 'dashboard' as const, label: 'Dashboard', icon: '▣' },
     { key: 'rooms' as const, label: 'Rooms', icon: '⌂' },
     { key: 'import' as const, label: 'Import', icon: '⇪' },
-    { key: 'templates' as const, label: 'Templates', icon: '⊡' },
     { key: 'images' as const, label: 'Images', icon: '▨' },
+    { key: 'quicklinks' as const, label: 'Quick Links', icon: '⊞' },
     { key: 'reports' as const, label: 'Reports', icon: '⊟' },
   ]
 
@@ -1478,8 +2425,8 @@ function AdminApp() {
               {activeTab === 'dashboard' && 'Overview of system health and key metrics'}
               {activeTab === 'rooms' && 'Create, edit and manage room records'}
               {activeTab === 'import' && 'Bulk import rooms from Excel files'}
-              {activeTab === 'templates' && 'Floor plan templates for building navigation'}
               {activeTab === 'images' && 'Upload and manage the media library'}
+              {activeTab === 'quicklinks' && 'Manage the shortcut buttons on the kiosk home screen'}
               {activeTab === 'reports' && 'Feedback and search analytics'}
             </span>
           </div>
@@ -1495,6 +2442,28 @@ function AdminApp() {
 
         {activeTab === 'dashboard' && (
           <div className="admin-tab-panel">
+            {ibxConfig ? (
+              <section className="admin-card ibx-summary-card">
+                <div className="section-head">
+                  <div>
+                    <h2>IBX Setup</h2>
+                    <p className="muted-text">Prepared for separate IBX access and data partitions.</p>
+                  </div>
+                  <span className="template-count">{ibxConfig.isPrepared ? 'Prepared' : 'Not ready'}</span>
+                </div>
+                <div className="ibx-summary-grid">
+                  <div className="import-stat">
+                    <strong>{ibxConfig.current}</strong>
+                    <span>Current default IBX</span>
+                  </div>
+                  <div className="import-stat">
+                    <strong>{ibxConfig.available.length}</strong>
+                    <span>Configured IBX entries</span>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
             <section className="stats-grid">
               <article className="stat-card stat-card--rooms">
                 <div className="stat-icon-ring">⌂</div>
@@ -1517,7 +2486,7 @@ function AdminApp() {
                 <div className="stat-body">
                   <span className="stat-label">Feedback</span>
                   <strong className="stat-value">{feedback.length}</strong>
-                  <span className="stat-note">Avg {averageRating} / 5</span>
+                  <span className="stat-note">Avg {averageRating} / {feedbackScaleMax}</span>
                 </div>
               </article>
               <article className="stat-card stat-card--templates">
@@ -1539,15 +2508,15 @@ function AdminApp() {
                       <AreaChart data={chartData.searchesPerDay}>
                         <defs>
                           <linearGradient id="gradSearch" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                            <stop offset="5%" stopColor="var(--chart-series-search)" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="var(--chart-series-search)" stopOpacity={0} />
                           </linearGradient>
                         </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                         <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
                         <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                         <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorLine} />
-                        <Area type="monotone" dataKey="count" stroke="#6366f1" fill="url(#gradSearch)" strokeWidth={2} name="Searches" />
+                        <Area type="monotone" dataKey="count" stroke="var(--chart-series-search)" fill="url(#gradSearch)" strokeWidth={2} name="Searches" />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -1560,15 +2529,15 @@ function AdminApp() {
                       <AreaChart data={chartData.avgRatingPerDay}>
                         <defs>
                           <linearGradient id="gradRating" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                            <stop offset="5%" stopColor="var(--chart-series-rating)" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="var(--chart-series-rating)" stopOpacity={0} />
                           </linearGradient>
                         </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                         <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
-                        <YAxis domain={[0, 5]} tick={{ fontSize: 11 }} />
+                        <YAxis domain={[0, feedbackScaleMax]} tick={{ fontSize: 11 }} />
                         <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorLine} />
-                        <Area type="monotone" dataKey="avg" stroke="#f59e0b" fill="url(#gradRating)" strokeWidth={2} name="Avg Rating" />
+                        <Area type="monotone" dataKey="avg" stroke="var(--chart-series-rating)" fill="url(#gradRating)" strokeWidth={2} name="Avg Rating" />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -1579,13 +2548,16 @@ function AdminApp() {
                   <div className="chart-wrap">
                     <ResponsiveContainer width="100%" height={200}>
                       <BarChart data={chartData.ratingDistribution}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                        <XAxis dataKey="rating" tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${['😡','😕','😐','🙂','😍'][v - 1]} ${v}`} />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
+                        <XAxis dataKey="rating" tick={{ fontSize: 11 }} tickFormatter={(v: number) => {
+                          const option = getFeedbackOption(v)
+                          return `${option.emoji} ${option.shortLabel}`
+                        }} />
                         <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                         <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorFill} />
                         <Bar dataKey="count" name="Feedback" radius={[6, 6, 0, 0]}>
                           {chartData.ratingDistribution.map((entry) => (
-                            <Cell key={entry.rating} fill={['#ef4444','#f97316','#eab308','#22c55e','#10b981'][entry.rating - 1]} />
+                            <Cell key={entry.rating} fill={chartRatingPalette[normalizeFeedbackRating(entry.rating) - 1] ?? chartRatingPalette[1]} />
                           ))}
                         </Bar>
                       </BarChart>
@@ -1613,7 +2585,7 @@ function AdminApp() {
                           }}
                         >
                           {chartData.searchesByBuilding.map((_entry, i) => (
-                            <Cell key={i} fill={['#6366f1','#8b5cf6','#a78bfa','#c4b5fd','#ddd6fe','#7c3aed','#4f46e5'][i % 7]} />
+                            <Cell key={i} fill={chartScalePalette[i % chartScalePalette.length]} />
                           ))}
                         </Pie>
                         <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} />
@@ -1628,7 +2600,7 @@ function AdminApp() {
                   <div className="chart-wrap">
                     <ResponsiveContainer width="100%" height={200}>
                       <BarChart data={chartData.topRooms} layout="vertical" margin={{ left: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                         <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
                         <YAxis type="category" dataKey="usid" tick={{ fontSize: 11 }} width={70} />
                         <Tooltip
@@ -1645,7 +2617,7 @@ function AdminApp() {
                         />
                         <Bar dataKey="searches" name="Searches" radius={[0, 6, 6, 0]}>
                           {chartData.topRooms.map((_entry, i) => (
-                            <Cell key={i} fill={i === 0 ? '#6366f1' : i < 3 ? '#8b5cf6' : '#a78bfa'} />
+                            <Cell key={i} fill={chartScalePalette[i === 0 ? 0 : i < 3 ? 1 : 2]} />
                           ))}
                         </Bar>
                       </BarChart>
@@ -1660,15 +2632,15 @@ function AdminApp() {
                       <AreaChart data={chartData.feedbackPerDay}>
                         <defs>
                           <linearGradient id="gradFeedback" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#ec4899" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="#ec4899" stopOpacity={0} />
+                            <stop offset="5%" stopColor="var(--chart-series-feedback)" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="var(--chart-series-feedback)" stopOpacity={0} />
                           </linearGradient>
                         </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
                         <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
                         <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                         <Tooltip contentStyle={chartTooltipContentStyle} labelStyle={chartTooltipLabelStyle} itemStyle={chartTooltipItemStyle} cursor={chartHoverCursorLine} />
-                        <Area type="monotone" dataKey="count" stroke="#ec4899" fill="url(#gradFeedback)" strokeWidth={2} name="Feedback" />
+                        <Area type="monotone" dataKey="count" stroke="var(--chart-series-feedback)" fill="url(#gradFeedback)" strokeWidth={2} name="Feedback" />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -1809,9 +2781,21 @@ function AdminApp() {
                         <strong>{selectedRoomAsset?.title ?? 'Selected image'}</strong>
                         <span>{selectedRoomAsset?.subtitle ?? roomForm.image}</span>
                       </div>
-                      <button className="secondary-button compact" onClick={handleClearRoomImage}>
-                        Remove
-                      </button>
+                      <div className="button-row">
+                        <button
+                          className="secondary-button compact"
+                          onClick={() => openLightbox({
+                            src: resolveAssetUrl(roomForm.image),
+                            title: selectedRoomAsset?.title ?? 'Selected image',
+                            subtitle: selectedRoomAsset?.subtitle,
+                          })}
+                        >
+                          Full screen
+                        </button>
+                        <button className="secondary-button compact" onClick={handleClearRoomImage}>
+                          Remove
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -1831,6 +2815,17 @@ function AdminApp() {
                   <p className="muted-text">Switch between a compact table and visual card grid.</p>
                 </div>
                 <div className="view-controls">
+                  <label className="selection-toggle">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleRoomsSelected}
+                      onChange={() => setSelectedRoomIds(allVisibleRoomsSelected ? [] : filteredRooms.map((room) => room.usid))}
+                    />
+                    <span>Select visible</span>
+                  </label>
+                  <button className="danger-button compact" onClick={() => void handleBulkDeleteRooms()} disabled={selectedRoomIds.length === 0}>
+                    Delete selected
+                  </button>
                   <input
                     className="search-filter"
                     placeholder="Search by USID, building or level"
@@ -1861,6 +2856,7 @@ function AdminApp() {
                   <table className="rooms-table">
                     <thead>
                       <tr>
+                        <th />
                         <th>USID</th>
                         <th>Building</th>
                         <th>Level</th>
@@ -1873,6 +2869,15 @@ function AdminApp() {
                     <tbody>
                       {filteredRooms.map((room) => (
                         <tr key={room.usid}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              aria-label={`Select room ${room.usid}`}
+                              title={`Select room ${room.usid}`}
+                              checked={selectedRoomIds.includes(room.usid)}
+                              onChange={() => setSelectedRoomIds((current) => toggleId(current, room.usid))}
+                            />
+                          </td>
                           <td><span className="table-mono">{room.usid}</span></td>
                           <td>{room.building}</td>
                           <td>{room.level}</td>
@@ -1898,6 +2903,15 @@ function AdminApp() {
                 <div className="rooms-grid">
                   {filteredRooms.map((room) => (
                     <article key={room.usid} className="room-card">
+                      <label className="card-select-checkbox">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select room ${room.usid}`}
+                          title={`Select room ${room.usid}`}
+                          checked={selectedRoomIds.includes(room.usid)}
+                          onChange={() => setSelectedRoomIds((current) => toggleId(current, room.usid))}
+                        />
+                      </label>
                       {room.image ? <img src={resolveAssetUrl(room.image)} alt={room.room} loading="lazy" decoding="async" /> : <div className="room-card-placeholder">No image</div>}
                       <strong>{room.usid}</strong>
                       <span>{room.building}</span>
@@ -1905,6 +2919,18 @@ function AdminApp() {
                       <span>Room {room.room}</span>
                       <span>Door {room.door}</span>
                       <div className="button-row">
+                        {room.image ? (
+                          <button
+                            className="secondary-button compact"
+                            onClick={() => openLightbox({
+                              src: resolveAssetUrl(room.image),
+                              title: `${room.building} ${room.room}`,
+                              subtitle: `Door ${room.door}`,
+                            })}
+                          >
+                            View
+                          </button>
+                        ) : null}
                         <button className="secondary-button compact" onClick={() => setRoomForm(room)}>
                           Edit
                         </button>
@@ -1983,109 +3009,6 @@ function AdminApp() {
           </div>
         )}
 
-        {activeTab === 'templates' && (
-          <div className="admin-tab-panel">
-            <section className="admin-card">
-              <div className="section-head">
-                <div>
-                  <h2>Building Templates</h2>
-                  <p className="muted-text">
-                    {roomForm.building
-                      ? matchingBuildingTemplates.length > 0
-                        ? `Showing template matches for ${roomForm.building}.`
-                        : `No saved template matches ${roomForm.building} yet.`
-                      : 'Manage floor plan templates used on the kiosk start screen.'}
-                  </p>
-                </div>
-                <div className="template-panel-actions">
-                  <span className="template-count">{matchingBuildingTemplates.length} available</span>
-                  <label className="upload-button compact">
-                    {isUploadingTemplates ? 'Uploading...' : 'Upload templates'}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      hidden
-                      onChange={(event) => {
-                        void handleTemplateUpload(event.target.files)
-                        event.currentTarget.value = ''
-                      }}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              {matchingBuildingTemplates.length > 0 ? (
-                <div className="template-library-grid">
-                  {matchingBuildingTemplates.map((template) => (
-                    <article
-                      key={template.fileName}
-                      className={`template-card ${roomForm.image === template.path ? 'is-selected' : ''}`}
-                    >
-                      <div className="template-card-preview">
-                        <img src={resolveAssetUrl(template.path)} alt={template.building} loading="lazy" decoding="async" />
-                      </div>
-                      <div className="template-card-body">
-                        <div className="template-card-header">
-                          <div className="template-card-meta">
-                            <strong>{template.building}</strong>
-                            <span>{template.fileName}</span>
-                          </div>
-                          <label className="template-visibility-toggle">
-                            <input
-                              type="checkbox"
-                              checked={template.showOnHome}
-                              onChange={(event) => {
-                                void handleToggleBuildingTemplateVisibility(template, event.target.checked)
-                              }}
-                            />
-                            <span>Kiosk</span>
-                          </label>
-                        </div>
-                        <div className="template-card-rename">
-                          <input
-                            value={templateRenameDrafts[template.fileName] ?? template.name}
-                            onChange={(event) => {
-                              const nextValue = event.target.value
-                              setTemplateRenameDrafts((current) => ({ ...current, [template.fileName]: nextValue }))
-                            }}
-                            placeholder="Display name"
-                          />
-                          <button className="primary-button compact" onClick={() => void handleRenameBuildingTemplate(template)}>
-                            Rename
-                          </button>
-                        </div>
-                        <div className="template-card-actions">
-                          {roomForm.image === template.path ? (
-                            <button
-                              className="secondary-button compact"
-                              onClick={() => { setRoomForm((c) => ({ ...c, image: '', building: '' })); setStatusNotice({ tone: 'info', message: 'Template deselected.' }) }}
-                            >
-                              Deselect
-                            </button>
-                          ) : (
-                            <button
-                              className="secondary-button compact"
-                              onClick={() => handleUseBuildingTemplate(template)}
-                            >
-                              Use template
-                            </button>
-                          )}
-                          <button className="danger-button compact" onClick={() => void handleDeleteBuildingTemplate(template)}>
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <p className="muted-text">Upload a new template or add a building name to narrow existing matches.</p>
-              )}
-            </section>
-          </div>
-        )}
-
         {activeTab === 'images' && (
           <div className="admin-tab-panel">
             <section className="admin-card">
@@ -2114,6 +3037,17 @@ function AdminApp() {
               </div>
 
               <div className="toolbar-row image-library-toolbar">
+                <label className="selection-toggle">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleImagesSelected}
+                    onChange={() => setSelectedImageIds(allVisibleImagesSelected ? [] : imagePageData.items.map((image) => image.fileName))}
+                  />
+                  <span>Select page</span>
+                </label>
+                <button className="danger-button compact" onClick={() => void handleBulkDeleteImages()} disabled={selectedImageIds.length === 0}>
+                  Delete selected
+                </button>
                 <input
                   className="search-filter"
                   placeholder="Search images by name"
@@ -2145,6 +3079,15 @@ function AdminApp() {
               <div className="image-library-grid">
                 {imagePageData.items.map((image) => (
                   <article key={image.fileName} className="image-library-card">
+                    <label className="card-select-checkbox">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select image ${image.name}`}
+                        title={`Select image ${image.name}`}
+                        checked={selectedImageIds.includes(image.fileName)}
+                        onChange={() => setSelectedImageIds((current) => toggleId(current, image.fileName))}
+                      />
+                    </label>
                     <div className="image-library-preview">
                       <img src={resolveAssetUrl(image.path)} alt={image.name} loading="lazy" decoding="async" />
                     </div>
@@ -2162,6 +3105,16 @@ function AdminApp() {
                         placeholder="Rename image"
                       />
                       <div className="button-row image-library-actions">
+                        <button
+                          className="secondary-button compact"
+                          onClick={() => openLightbox({
+                            src: resolveAssetUrl(image.path),
+                            title: image.name,
+                            subtitle: image.fileName,
+                          })}
+                        >
+                          View
+                        </button>
                         <button className="secondary-button compact" onClick={() => { setRoomForm((current) => ({ ...current, image: image.path })); setActiveTab('rooms') }}>
                           Use for room
                         </button>
@@ -2196,15 +3149,268 @@ function AdminApp() {
           </div>
         )}
 
+        {activeTab === 'quicklinks' && (
+          <div className="admin-tab-panel">
+            <div className="ql-layout">
+              <section className="admin-card ql-form-card">
+                <div className="section-head">
+                  <h2>{editingQuickLinkId !== null ? 'Edit Quick Link' : 'Add Quick Link'}</h2>
+                </div>
+                <p className="muted-text">
+                  Quick links appear as shortcut buttons on the kiosk home screen. Each button jumps directly to the room you specify.
+                </p>
+                <div className="form-grid ql-form-grid">
+                  <label className="form-label form-label--full">
+                    Button label
+                    <input
+                      className="form-input"
+                      type="text"
+                      value={quickLinkForm.label}
+                      maxLength={80}
+                      placeholder="e.g. NOC, Help Desk, Exit"
+                      onChange={(event) => setQuickLinkForm((current) => ({ ...current, label: event.target.value }))}
+                    />
+                  </label>
+                  <label className="form-label">
+                    Room
+                    <select
+                      className="form-input"
+                      value={quickLinkForm.usid}
+                      onChange={(event) => {
+                        const selectedRoom = rooms.find((r) => r.usid === event.target.value)
+                        setQuickLinkForm((current) => ({
+                          ...current,
+                          usid: event.target.value,
+                          label: current.label || (selectedRoom?.room ?? ''),
+                        }))
+                      }}
+                    >
+                      <option value="">— Select a room —</option>
+                      {Array.from(new Set(rooms.map((r) => r.building))).sort().map((building) => (
+                        <optgroup key={building} label={building}>
+                          {rooms.filter((r) => r.building === building).map((room) => (
+                            <option key={room.usid} value={room.usid}>
+                              {room.usid} — {room.room}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-label">
+                    Sort order
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={0}
+                      value={quickLinkForm.sortOrder}
+                      onChange={(event) => setQuickLinkForm((current) => ({ ...current, sortOrder: Number(event.target.value) || 0 }))}
+                    />
+                  </label>
+                </div>
+                <div className="button-row">
+                  <button className="primary-button compact" onClick={() => void handleSaveQuickLink()}>
+                    {editingQuickLinkId !== null ? 'Update' : 'Add quick link'}
+                  </button>
+                  {editingQuickLinkId !== null ? (
+                    <button className="secondary-button compact" onClick={() => { setEditingQuickLinkId(null); setQuickLinkForm(emptyQuickLinkForm) }}>
+                      Cancel
+                    </button>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="admin-card">
+                <div className="section-head">
+                  <h2>Kiosk Buttons</h2>
+                  <span className="template-count">{adminQuickLinks.length} configured</span>
+                </div>
+                {adminQuickLinks.length === 0 ? (
+                  <p className="muted-text">No quick links configured yet. Add one using the form.</p>
+                ) : (
+                  <div className="ql-preview-list">
+                    {qlWithRoomAndTemplate.map(({ ql, room, template }) => (
+                      <div key={ql.id} className={`ql-preview-card${editingQuickLinkId === ql.id ? ' is-editing' : ''}`}>
+                        <div className="ql-preview-thumb">
+                          {template ? (
+                            <img src={resolveAssetUrl(template.path)} alt={template.building} />
+                          ) : (
+                            <div className="ql-preview-no-thumb">
+                              <span>No floor plan</span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="ql-preview-info">
+                          <div className="ql-preview-top">
+                            <strong className="ql-preview-label">{ql.label}</strong>
+                            <span className="ql-preview-order">#{ql.sortOrder}</span>
+                          </div>
+                          <span className="table-mono">{ql.usid}</span>
+                          {room && (
+                            <span className="ql-preview-room">{room.building} · {room.level} · {room.room}</span>
+                          )}
+                        </div>
+                        <div className="ql-preview-actions">
+                          <button className="secondary-button compact" onClick={() => handleEditQuickLink(ql)}>Edit</button>
+                          <button className="danger-button compact" onClick={() => void handleDeleteQuickLink(ql.id)}>Delete</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+
+            <section className="admin-card admin-card-spaced">
+              <div className="section-head">
+                <div>
+                  <h2>Floor Plan Images</h2>
+                  <p className="muted-text">
+                    Upload floor plan images and assign them to buildings. Every configured quick link appears here and can be linked to a building floor plan.
+                  </p>
+                </div>
+                <div className="template-panel-actions">
+                  <span className="template-count">{floorPlanCards.length} cards</span>
+                  <label className="selection-toggle">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleTemplatesSelected}
+                      onChange={() => setSelectedTemplateIds(allVisibleTemplatesSelected ? [] : buildingTemplates.map((template) => template.fileName))}
+                    />
+                    <span>Select visible</span>
+                  </label>
+                  <button className="danger-button compact" onClick={() => void handleBulkDeleteTemplates()} disabled={selectedTemplateIds.length === 0}>
+                    Delete selected
+                  </button>
+                  <label className="upload-button compact">
+                    {isUploadingTemplates ? 'Uploading...' : 'Upload templates'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={(event) => {
+                        void handleTemplateUpload(event.target.files)
+                        event.currentTarget.value = ''
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {floorPlanCards.length > 0 ? (
+                <div className="template-library-grid">
+                  {floorPlanCards.map(({ building, quickLinks, template }) => (
+                    <article
+                      key={template?.fileName ?? `floor-plan-${building}`}
+                      className={`template-card ${quickLinks.length > 0 ? 'is-linked' : ''}`}
+                    >
+                      {template ? (
+                        <label className="card-select-checkbox">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select template ${template.building}`}
+                            title={`Select template ${template.building}`}
+                            checked={selectedTemplateIds.includes(template.fileName)}
+                            onChange={() => setSelectedTemplateIds((current) => toggleId(current, template.fileName))}
+                          />
+                        </label>
+                      ) : null}
+                      <div className="template-card-preview">
+                        {template ? (
+                          <img src={resolveAssetUrl(template.path)} alt={building} loading="lazy" decoding="async" />
+                        ) : (
+                          <div className="template-card-empty">No floor plan uploaded</div>
+                        )}
+                      </div>
+                      <div className="template-card-body">
+                        <div className="template-card-header">
+                          <div className="template-card-meta">
+                            <span className="template-badge template-badge--admin">{getTemplateBadgeLabel(building)}</span>
+                            <strong>{building}</strong>
+                            <span>{template?.fileName ?? 'No image file assigned yet'}</span>
+                          </div>
+                          {template ? (
+                            <label className="template-visibility-toggle">
+                              <input
+                                type="checkbox"
+                                checked={template.showOnHome}
+                                onChange={(event) => {
+                                  void handleToggleBuildingTemplateVisibility(template, event.target.checked)
+                                }}
+                              />
+                              <span>Kiosk fallback</span>
+                            </label>
+                          ) : null}
+                        </div>
+                        {quickLinks.length > 0 && (
+                          <div className="template-ql-badges">
+                            {quickLinks.map((ql) => (
+                              <span key={ql.id} className="template-ql-badge">⊞ {ql.label}</span>
+                            ))}
+                          </div>
+                        )}
+                        {template ? (
+                          <div className="template-card-rename">
+                            <input
+                              value={templateRenameDrafts[template.fileName] ?? template.name}
+                              onChange={(event) => {
+                                const nextValue = event.target.value
+                                setTemplateRenameDrafts((current) => ({ ...current, [template.fileName]: nextValue }))
+                              }}
+                              placeholder="Display name"
+                            />
+                            <button className="primary-button compact" onClick={() => void handleRenameBuildingTemplate(template)}>
+                              Rename
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="muted-text">Upload a floor plan image for {building} to show a thumbnail on the kiosk button.</p>
+                        )}
+                        <div className="template-card-actions">
+                          {template ? (
+                            <>
+                              <button
+                                className="secondary-button compact"
+                                onClick={() => openLightbox({
+                                  src: resolveAssetUrl(template.path),
+                                  title: template.building,
+                                  subtitle: template.fileName,
+                                })}
+                              >
+                                View
+                              </button>
+                              <button className="danger-button compact" onClick={() => void handleDeleteBuildingTemplate(template)}>
+                                Delete
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted-text">Add a quick link or upload a floor plan image to create cards here.</p>
+              )}
+            </section>
+          </div>
+        )}
+
         {activeTab === 'reports' && (
           <div className="admin-tab-panel">
             <section className="dashboard-panels">
               <article className="admin-card">
                 <div className="section-head">
                   <h2>Feedback</h2>
-                  <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/feedback.xlsx')}>
-                    Export XLSX
-                  </a>
+                  <div className="button-row">
+                    <button className="danger-button compact" onClick={() => void handleClearFeedbackData()}>
+                      Delete data
+                    </button>
+                    <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/feedback.xlsx')}>
+                      Export XLSX
+                    </a>
+                  </div>
                 </div>
                 <p className="muted-text">All feedback entries. Export for offline analysis.</p>
 
@@ -2224,7 +3430,7 @@ function AdminApp() {
                       ) : feedback.map((entry) => (
                         <tr key={entry.id}>
                           <td><span className="table-mono">{entry.usid}</span></td>
-                          <td><span className="rating-badge">{['😡','😕','😐','🙂','😍'][entry.rating - 1]} {entry.rating}/5</span></td>
+                          <td><span className={`rating-badge rating-badge--${getFeedbackOption(entry.rating).badgeTone}`}>{getFeedbackOption(entry.rating).emoji} {getFeedbackOption(entry.rating).label}</span></td>
                           <td>{entry.comment || <span className="muted-text">No comment</span>}</td>
                           <td>{formatDate(entry.timestamp)}</td>
                         </tr>
@@ -2237,9 +3443,14 @@ function AdminApp() {
               <article className="admin-card">
                 <div className="section-head">
                   <h2>Search Report</h2>
-                  <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/report.xlsx')}>
-                    Export XLSX
-                  </a>
+                  <div className="button-row">
+                    <button className="danger-button compact" onClick={() => void handleClearSearchData()}>
+                      Delete data
+                    </button>
+                    <a className="secondary-button compact link-button" href={getDownloadUrl('/api/admin/report.xlsx')}>
+                      Export XLSX
+                    </a>
+                  </div>
                 </div>
                 <p className="muted-text">All search entries with counters per USID.</p>
 
@@ -2249,20 +3460,22 @@ function AdminApp() {
                       <tr>
                         <th>USID</th>
                         <th>Searches</th>
-                        <th>Up</th>
-                        <th>Down</th>
+                        <th>Positive</th>
+                        <th>Neutral</th>
+                        <th>Negative</th>
                         <th>Last activity</th>
                       </tr>
                     </thead>
                     <tbody>
                       {report.length === 0 ? (
-                        <tr><td colSpan={5}>No report data yet.</td></tr>
+                        <tr><td colSpan={6}>No report data yet.</td></tr>
                       ) : report.map((entry) => (
                         <tr key={entry.usid}>
                           <td><span className="table-mono">{entry.usid}</span></td>
                           <td><strong>{entry.searches}</strong></td>
-                          <td>{entry.up}</td>
-                          <td>{entry.down}</td>
+                          <td>{entry.positive}</td>
+                          <td>{entry.neutral}</td>
+                          <td>{entry.negative}</td>
                           <td>{formatDate(entry.lastActivity)}</td>
                         </tr>
                       ))}
@@ -2292,6 +3505,13 @@ function AdminApp() {
           </div>
         </div>
       )}
+      {lightboxAsset ? (
+        <ImageLightbox
+          key={`${lightboxAsset.src}:${lightboxAsset.title}:${lightboxAsset.subtitle ?? ''}`}
+          asset={lightboxAsset}
+          onClose={() => setLightboxAsset(null)}
+        />
+      ) : null}
     </main>
   )
 }
@@ -2304,12 +3524,26 @@ function AdminAccessRedirect() {
   return null
 }
 
+function RootRouteRedirect() {
+  useEffect(() => {
+    window.location.replace('/')
+  }, [])
+
+  return null
+}
+
 function App() {
-  const isAdminRoute = window.location.pathname.startsWith('/admin')
+  const pathname = window.location.pathname
+  const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/')
+  const isRootRoute = pathname === '/' || pathname === ''
   const blockAdminOnDevice = isAdminRoute && isLikelyIpadDevice()
 
   if (blockAdminOnDevice) {
     return <AdminAccessRedirect />
+  }
+
+  if (!isAdminRoute && !isRootRoute) {
+    return <RootRouteRedirect />
   }
 
   return isAdminRoute ? <AdminApp /> : <KioskApp />

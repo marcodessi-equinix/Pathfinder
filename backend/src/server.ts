@@ -31,8 +31,9 @@ type FeedbackRow = {
 type ReportRow = {
   usid: string
   searches: number
-  up: number
-  down: number
+  positive: number
+  neutral: number
+  negative: number
   lastActivity: string
 }
 
@@ -42,7 +43,60 @@ type UploadedImage = {
   path: string
 }
 
+type SearchAttemptState = {
+  failedAttempts: number
+  escalationLevel: number
+  lockedUntil: number
+  lastActivityAt: number
+}
+
+type IbxConfig = {
+  current: string
+  available: string[]
+  isPrepared: boolean
+}
+
+type QuickLink = {
+  id: number
+  label: string
+  usid: string
+  sortOrder: number
+}
+
 const maxAssetUploadFileSizeBytes = 25 * 1024 * 1024
+const minFeedbackRating = 1
+const neutralFeedbackRating = 2
+const maxFeedbackRating = 3
+
+function normalizeFeedbackRating(value: number | string | null | undefined): number {
+  if (typeof value === 'string') {
+    const trimmed = value.trim().toLowerCase()
+    if (trimmed === 'up') {
+      return maxFeedbackRating
+    }
+
+    if (trimmed === 'down') {
+      return minFeedbackRating
+    }
+
+    const parsed = Number.parseInt(trimmed, 10)
+    return Number.isNaN(parsed) ? neutralFeedbackRating : normalizeFeedbackRating(parsed)
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return neutralFeedbackRating
+  }
+
+  if (value <= 2) {
+    return minFeedbackRating
+  }
+
+  if (value === 3) {
+    return neutralFeedbackRating
+  }
+
+  return maxFeedbackRating
+}
 
 function formatFileSizeLimit(bytes: number) {
   const megaBytes = bytes / (1024 * 1024)
@@ -97,6 +151,21 @@ const cookieSecure = (process.env.COOKIE_SECURE ?? 'false').toLowerCase() === 't
 const sessionCookieName = 'pathfinder_admin'
 const sessionDurationMs = 8 * 60 * 60 * 1000
 const supportedImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg'])
+const searchInitialFailureLimit = 5
+const searchInitialLockoutMs = 30 * 1000
+const searchEscalatedFailureLimit = 3
+const searchEscalatedLockoutMs = 5 * 60 * 1000
+const searchAttemptResetAfterMs = 10 * 60 * 1000
+const configuredIbxOptions = (process.env.PATHFINDER_IBX_OPTIONS ?? 'default')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean)
+const defaultIbx = (process.env.PATHFINDER_DEFAULT_IBX ?? configuredIbxOptions[0] ?? 'default').trim() || 'default'
+const ibxConfig: IbxConfig = {
+  current: defaultIbx,
+  available: Array.from(new Set([defaultIbx, ...configuredIbxOptions])),
+  isPrepared: true,
+}
 
 mkdirSync(dataDir, { recursive: true })
 mkdirSync(uploadsDir, { recursive: true })
@@ -146,6 +215,8 @@ console.log('Pathfinder storage paths:', {
 
 const database = new DatabaseSync(databaseFile)
 const sessions = new Map<string, number>()
+const searchAttempts = new Map<string, SearchAttemptState>()
+const kioskSyncClients = new Set<Response>()
 
 database.exec(`
   PRAGMA journal_mode = WAL;
@@ -162,7 +233,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     usid TEXT NOT NULL,
-    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 3),
     comment TEXT NOT NULL DEFAULT '',
     timestamp TEXT NOT NULL
   );
@@ -177,27 +248,49 @@ database.exec(`
     file_name TEXT PRIMARY KEY,
     show_on_home INTEGER NOT NULL DEFAULT 1 CHECK (show_on_home IN (0, 1))
   );
+
+  CREATE TABLE IF NOT EXISTS quick_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    usid TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
+  );
 `)
 
-// Migrate old feedback table: convert text rating ('up'/'down') to integer (1-5)
+// Migrate legacy feedback values into the current three-point rating scale.
 try {
   const info = database.prepare("PRAGMA table_info('feedback')").all() as { name: string; type: string }[]
   const ratingCol = info.find((c) => c.name === 'rating')
-  if (ratingCol && ratingCol.type === 'TEXT') {
+  const tableDefinition = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'feedback'").get() as { sql: string } | undefined
+  const usesThreePointScale = tableDefinition?.sql?.includes('BETWEEN 1 AND 3') ?? false
+  const hasOutOfRangeRatings = (database.prepare('SELECT COUNT(*) AS count FROM feedback WHERE CAST(rating AS INTEGER) NOT BETWEEN 1 AND 3').get() as { count: number }).count > 0
+
+  if (ratingCol && (ratingCol.type === 'TEXT' || !usesThreePointScale || hasOutOfRangeRatings)) {
     database.exec(`
       ALTER TABLE feedback RENAME TO feedback_old;
       CREATE TABLE feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         usid TEXT NOT NULL,
-        rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+        rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 3),
         comment TEXT NOT NULL DEFAULT '',
         timestamp TEXT NOT NULL
       );
-      INSERT INTO feedback (usid, rating, comment, timestamp)
-        SELECT usid, CASE WHEN rating = 'up' THEN 4 ELSE 2 END, comment, timestamp FROM feedback_old;
+      INSERT INTO feedback (id, usid, rating, comment, timestamp)
+        SELECT id,
+          usid,
+          CASE
+            WHEN lower(trim(rating)) = 'up' THEN 3
+            WHEN lower(trim(rating)) = 'down' THEN 1
+            WHEN CAST(rating AS INTEGER) <= 2 THEN 1
+            WHEN CAST(rating AS INTEGER) = 3 THEN 2
+            ELSE 3
+          END,
+          comment,
+          timestamp
+        FROM feedback_old;
       DROP TABLE feedback_old;
     `)
-    console.log('Migrated feedback table from text to integer rating.')
+    console.log('Migrated feedback table to the three-point rating scale.')
   }
 } catch { /* table is already in new format */ }
 
@@ -219,7 +312,7 @@ const searchSchema = z.object({
 const feedbackSchema = z
   .object({
     usid: usidSchema,
-    rating: z.number().int().min(1).max(5),
+    rating: z.number().int().min(1).max(3),
     comment: z.string().trim().max(500).optional().default(''),
   })
   .superRefine((value, ctx) => {
@@ -253,6 +346,10 @@ const buildingTemplateVisibilitySchema = z.object({
 
 const loginSchema = z.object({
   password: z.string().min(1),
+})
+
+const bulkDeleteSchema = z.object({
+  ids: z.array(z.string().trim().min(1)).min(1).max(500),
 })
 
 const saveRoomStatement = database.prepare(`
@@ -311,6 +408,88 @@ const deleteTemplateSettingsStatement = database.prepare(
 const updateRoomImageStatement = database.prepare('UPDATE rooms SET image = ? WHERE image = ?')
 const clearRoomImageStatement = database.prepare('UPDATE rooms SET image = ? WHERE image = ?')
 
+const listQuickLinksStatement = database.prepare(
+  'SELECT id, label, usid, sort_order AS sortOrder FROM quick_links ORDER BY sort_order ASC, id ASC',
+)
+const insertQuickLinkStatement = database.prepare(
+  'INSERT INTO quick_links (label, usid, sort_order) VALUES (?, ?, ?)',
+)
+const updateQuickLinkStatement = database.prepare(
+  'UPDATE quick_links SET label = ?, usid = ?, sort_order = ? WHERE id = ?',
+)
+const deleteQuickLinkStatement = database.prepare('DELETE FROM quick_links WHERE id = ?')
+
+const quickLinkSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  usid: usidSchema,
+  sortOrder: z.number().int().min(0).optional().default(0),
+})
+
+function listQuickLinks(): QuickLink[] {
+  return listQuickLinksStatement.all() as QuickLink[]
+}
+
+function sendKioskSyncEvent(response: Response, eventName: 'connected' | 'sync', payload: Record<string, unknown>) {
+  response.write(`event: ${eventName}\n`)
+  response.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+function notifyKioskContentUpdated(reason: string) {
+  const payload = {
+    kind: 'kiosk-content',
+    reason,
+    updatedAt: new Date().toISOString(),
+  }
+
+  for (const response of kioskSyncClients) {
+    sendKioskSyncEvent(response, 'sync', payload)
+  }
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length
+  const n = b.length
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  )
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+    }
+  }
+  return dp[m][n]
+}
+
+function fuzzyRoomScore(room: Room, query: string): number {
+  const q = query.toUpperCase()
+  const usid = room.usid.toUpperCase()
+  const building = room.building.toUpperCase()
+  const roomNum = room.room.toUpperCase()
+
+  if (usid === q) return 100
+  if (usid.startsWith(q) || q.startsWith(usid)) return 90
+  if (usid.includes(q) || building.includes(q) || roomNum.includes(q)) return 70
+
+  const dist = levenshtein(usid, q)
+  const maxLen = Math.max(usid.length, q.length)
+  if (maxLen === 0) return 0
+  const similarity = 1 - dist / maxLen
+  return similarity >= 0.5 ? Math.round(similarity * 60) : 0
+}
+
+function suggestRooms(query: string, limit = 4): Room[] {
+  const all = listRooms()
+  return all
+    .map((room) => ({ room, score: fuzzyRoomScore(room, query) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ room }) => room)
+}
+
 function normalizeImagePath(image: string): string {
   if (!image) {
     return ''
@@ -343,7 +522,7 @@ function buildReportRows(): ReportRow[] {
   const analytics = listAnalyticsStatement.all() as Array<{ usid: string; timestamp: string }>
   const feedback = listFeedbackStatement.all() as Array<{
     usid: string
-    rating: 'up' | 'down'
+    rating: number
     timestamp: string
   }>
 
@@ -359,8 +538,9 @@ function buildReportRows(): ReportRow[] {
     const created: ReportRow = {
       usid,
       searches: 0,
-      up: 0,
-      down: 0,
+      positive: 0,
+      neutral: 0,
+      negative: 0,
       lastActivity: timestamp,
     }
     rows.set(usid, created)
@@ -374,10 +554,14 @@ function buildReportRows(): ReportRow[] {
 
   for (const row of feedback) {
     const current = getOrCreateRow(row.usid, row.timestamp)
-    if (row.rating === 'up') {
-      current.up += 1
+    const normalizedRating = normalizeFeedbackRating(row.rating)
+
+    if (normalizedRating === maxFeedbackRating) {
+      current.positive += 1
+    } else if (normalizedRating === neutralFeedbackRating) {
+      current.neutral += 1
     } else {
-      current.down += 1
+      current.negative += 1
     }
   }
 
@@ -428,8 +612,9 @@ async function buildReportWorkbookBuffer() {
   worksheet.columns = [
     { header: 'USID', key: 'usid', width: 14 },
     { header: 'Searches', key: 'searches', width: 14 },
-    { header: 'Thumbs Up', key: 'up', width: 14 },
-    { header: 'Thumbs Down', key: 'down', width: 16 },
+    { header: 'Positive', key: 'positive', width: 14 },
+    { header: 'Neutral', key: 'neutral', width: 14 },
+    { header: 'Negative', key: 'negative', width: 14 },
     { header: 'Last Activity', key: 'lastActivity', width: 24 },
   ]
 
@@ -437,8 +622,9 @@ async function buildReportWorkbookBuffer() {
     worksheet.addRow({
       usid: row.usid,
       searches: row.searches,
-      up: row.up,
-      down: row.down,
+      positive: row.positive,
+      neutral: row.neutral,
+      negative: row.negative,
       lastActivity: row.lastActivity,
     })
   }
@@ -454,7 +640,7 @@ async function buildFeedbackWorkbookBuffer() {
 
   worksheet.columns = [
     { header: 'USID', key: 'usid', width: 14 },
-    { header: 'Rating', key: 'rating', width: 12 },
+    { header: 'Rating (1-3)', key: 'rating', width: 12 },
     { header: 'Comment', key: 'comment', width: 48 },
     { header: 'Timestamp', key: 'timestamp', width: 24 },
   ]
@@ -462,7 +648,7 @@ async function buildFeedbackWorkbookBuffer() {
   for (const row of rows) {
     worksheet.addRow({
       usid: row.usid,
-      rating: row.rating,
+      rating: normalizeFeedbackRating(row.rating),
       comment: row.comment,
       timestamp: row.timestamp,
     })
@@ -515,7 +701,7 @@ function ensureLegacyImport() {
     for (const item of legacyRaw.feedback ?? []) {
       insertFeedbackStatement.run(
         item.usid,
-        item.rating,
+        normalizeFeedbackRating(item.rating),
         item.comment ?? '',
         item.timestamp ?? new Date().toISOString(),
       )
@@ -540,6 +726,110 @@ function clearExpiredSessions() {
       sessions.delete(token)
     }
   }
+}
+
+function getSearchAttemptKey(req: Request) {
+  return req.ip || 'unknown'
+}
+
+function getSearchAttemptState(req: Request) {
+  const key = getSearchAttemptKey(req)
+  const current = searchAttempts.get(key)
+  const now = Date.now()
+
+  if (!current) {
+    return null
+  }
+
+  if (current.lastActivityAt + searchAttemptResetAfterMs <= now) {
+    searchAttempts.delete(key)
+    return null
+  }
+
+  if (current.lockedUntil > 0 && current.lockedUntil <= now) {
+    const nextState = {
+      ...current,
+      lockedUntil: 0,
+    }
+
+    searchAttempts.set(key, nextState)
+    return nextState
+  }
+
+  return current
+}
+
+function clearSearchAttemptState(req: Request) {
+  searchAttempts.delete(getSearchAttemptKey(req))
+}
+
+function registerSearchFailure(req: Request) {
+  const key = getSearchAttemptKey(req)
+  const current = getSearchAttemptState(req)
+  const now = Date.now()
+  let failedAttempts = (current?.failedAttempts ?? 0) + 1
+  let escalationLevel = current?.escalationLevel ?? 0
+  let lockedUntil = 0
+
+  if (escalationLevel === 0 && failedAttempts >= searchInitialFailureLimit) {
+    lockedUntil = now + searchInitialLockoutMs
+    escalationLevel = 1
+    failedAttempts = 0
+  } else if (escalationLevel >= 1 && failedAttempts >= searchEscalatedFailureLimit) {
+    lockedUntil = now + searchEscalatedLockoutMs
+    failedAttempts = 0
+  }
+
+  searchAttempts.set(key, {
+    failedAttempts,
+    escalationLevel,
+    lockedUntil,
+    lastActivityAt: now,
+  })
+
+  return {
+    failedAttempts,
+    escalationLevel,
+    lockedUntil,
+    retryAfterSeconds: lockedUntil > 0 ? Math.max(1, Math.ceil((lockedUntil - now) / 1000)) : 0,
+  }
+}
+
+function getRemainingSearchLockSeconds(req: Request) {
+  const current = getSearchAttemptState(req)
+  if (!current || current.lockedUntil <= 0) {
+    return 0
+  }
+
+  return Math.max(1, Math.ceil((current.lockedUntil - Date.now()) / 1000))
+}
+
+function clearTable(tableName: 'feedback' | 'analytics') {
+  database.exec(`DELETE FROM ${tableName}`)
+}
+
+function deleteRooms(usids: string[]) {
+  runInTransaction(() => {
+    for (const usid of usids) {
+      deleteRoomStatement.run(usid)
+    }
+  })
+}
+
+function deleteImages(fileNames: string[]) {
+  runInTransaction(() => {
+    for (const fileName of fileNames) {
+      deleteImageFile(fileName)
+    }
+  })
+}
+
+function deleteBuildingTemplates(fileNames: string[]) {
+  runInTransaction(() => {
+    for (const fileName of fileNames) {
+      deleteBuildingTemplateFile(fileName)
+    }
+  })
 }
 
 function requireAdmin(req: Request, res: Response, next: NextFunction) {
@@ -699,6 +989,10 @@ function listPublicBuildingTemplates(): BuildingTemplate[] {
   return listBuildingTemplates().filter(
     (template) => template.showOnHome && normalizeTemplateName(template.fileName) !== 'fr2grundriss',
   )
+}
+
+function getRoomByUsid(usid: string) {
+  return selectRoomStatement.get(usid.toUpperCase()) as Room | undefined
 }
 
 function normalizeTemplateName(value: string) {
@@ -878,15 +1172,51 @@ app.post('/api/search', (req, res) => {
     return
   }
 
-  const normalizedUsid = payload.data.usid.toUpperCase()
-  const room = prefixMatchRoomStatement.get(normalizedUsid, normalizedUsid) as Room | undefined
-  if (!room) {
-    res.status(404).json({ error: 'No room found for this USID.' })
+  const retryAfterSeconds = getRemainingSearchLockSeconds(req)
+  if (retryAfterSeconds > 0) {
+    const minutes = Math.floor(retryAfterSeconds / 60)
+    const seconds = retryAfterSeconds % 60
+    res.status(429).json({
+      error: `Too many failed attempts. Try again in ${minutes}:${String(seconds).padStart(2, '0')}.`,
+      retryAfterSeconds,
+    })
     return
   }
 
+  const normalizedUsid = payload.data.usid.toUpperCase()
+  const room = prefixMatchRoomStatement.get(normalizedUsid, normalizedUsid) as Room | undefined
+  if (!room) {
+    const failureState = registerSearchFailure(req)
+
+    if (failureState.lockedUntil > 0) {
+      const minutes = Math.floor(failureState.retryAfterSeconds / 60)
+      const seconds = failureState.retryAfterSeconds % 60
+
+      res.status(429).json({
+        error: `Too many failed attempts. Try again in ${minutes}:${String(seconds).padStart(2, '0')}.`,
+        retryAfterSeconds: failureState.retryAfterSeconds,
+      })
+      return
+    }
+
+    res.status(404).json({ error: 'No room found for this code.' })
+    return
+  }
+
+  clearSearchAttemptState(req)
   insertAnalyticsStatement.run(normalizedUsid, new Date().toISOString())
   res.json(room)
+})
+
+app.post('/api/search/suggest', (req, res) => {
+  const payload = searchSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: 'Invalid query' })
+    return
+  }
+
+  const suggestions = suggestRooms(payload.data.usid)
+  res.json({ suggestions })
 })
 
 app.post('/api/feedback', (req, res) => {
@@ -899,7 +1229,7 @@ app.post('/api/feedback', (req, res) => {
   const timestamp = new Date().toISOString()
   insertFeedbackStatement.run(
     payload.data.usid,
-    payload.data.rating,
+    normalizeFeedbackRating(payload.data.rating),
     payload.data.comment,
     timestamp,
   )
@@ -911,10 +1241,59 @@ app.get('/api/building-templates', (_req, res) => {
   res.json(listPublicBuildingTemplates())
 })
 
+app.get('/api/quick-links', (_req, res) => {
+  res.json(listQuickLinks())
+})
+
+app.get('/api/rooms/:usid', (req, res) => {
+  const payload = usidSchema.safeParse(String(req.params.usid ?? ''))
+  if (!payload.success) {
+    res.status(400).json({ error: 'Invalid USID' })
+    return
+  }
+
+  const room = getRoomByUsid(payload.data)
+  if (!room) {
+    res.status(404).json({ error: 'Room not found.' })
+    return
+  }
+
+  res.json(room)
+})
+
+app.get('/api/kiosk/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders()
+  res.write('retry: 2000\n\n')
+
+  kioskSyncClients.add(res)
+  sendKioskSyncEvent(res, 'connected', {
+    kind: 'kiosk-content',
+    updatedAt: new Date().toISOString(),
+  })
+
+  const keepAlive = setInterval(() => {
+    res.write(': keep-alive\n\n')
+  }, 25000)
+
+  req.on('close', () => {
+    clearInterval(keepAlive)
+    kioskSyncClients.delete(res)
+    res.end()
+  })
+})
+
 app.get('/api/admin/session', (req, res) => {
   const token = req.cookies[sessionCookieName] as string | undefined
   const authenticated = Boolean(token && sessions.get(token) && sessions.get(token)! > Date.now())
   res.json({ authenticated })
+})
+
+app.get('/api/admin/ibx-config', requireAdmin, (_req, res) => {
+  res.json(ibxConfig)
 })
 
 app.post('/api/admin/login', (req, res) => {
@@ -954,6 +1333,30 @@ app.get('/api/admin/rooms', requireAdmin, (_req, res) => {
   res.json(listRooms())
 })
 
+app.delete('/api/admin/rooms/bulk-delete', requireAdmin, (req, res) => {
+  const payload = bulkDeleteSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  const normalizedIds: string[] = []
+
+  for (const id of payload.data.ids) {
+    const parsedId = usidSchema.safeParse(id)
+    if (!parsedId.success) {
+      res.status(400).json({ error: parsedId.error.flatten() })
+      return
+    }
+
+    normalizedIds.push(parsedId.data.toUpperCase())
+  }
+
+  deleteRooms(normalizedIds)
+  notifyKioskContentUpdated('rooms')
+  res.json({ ok: true, deleted: normalizedIds.length })
+})
+
 app.post('/api/admin/rooms', requireAdmin, (req, res) => {
   const payload = roomSchema.safeParse(req.body)
   if (!payload.success) {
@@ -962,17 +1365,20 @@ app.post('/api/admin/rooms', requireAdmin, (req, res) => {
   }
 
   saveRoom({ ...payload.data, image: normalizeImagePath(payload.data.image) })
+  notifyKioskContentUpdated('rooms')
   res.status(201).json({ ok: true })
 })
 
 app.delete('/api/admin/rooms/:usid', requireAdmin, (req, res) => {
   const usid = String(req.params.usid ?? '')
-  if (!/^\d{6}$/.test(usid)) {
+  const payload = usidSchema.safeParse(usid)
+  if (!payload.success) {
     res.status(400).json({ error: 'Invalid USID' })
     return
   }
 
-  deleteRoomStatement.run(usid)
+  deleteRoomStatement.run(payload.data.toUpperCase())
+  notifyKioskContentUpdated('rooms')
   res.json({ ok: true })
 })
 
@@ -996,6 +1402,7 @@ app.post('/api/admin/import', requireAdmin, (req, res) => {
     }
   })
 
+  notifyKioskContentUpdated('rooms')
   res.json({ ok: true, imported: rooms.length })
 })
 
@@ -1007,6 +1414,7 @@ app.post('/api/admin/upload-images', requireAdmin, upload.array('images'), (req,
     return
   }
 
+  notifyKioskContentUpdated('images')
   res.status(201).json({
     uploaded: files.map((file) => toUploadedImage(file.filename)),
   })
@@ -1043,8 +1451,32 @@ app.get('/api/admin/images', requireAdmin, (req, res) => {
   })
 })
 
+app.delete('/api/admin/images/bulk-delete', requireAdmin, (req, res) => {
+  const payload = bulkDeleteSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  deleteImages(payload.data.ids)
+  notifyKioskContentUpdated('images')
+  res.json({ ok: true, deleted: payload.data.ids.length })
+})
+
 app.get('/api/admin/building-templates', requireAdmin, (_req, res) => {
   res.json(listBuildingTemplates())
+})
+
+app.delete('/api/admin/building-templates/bulk-delete', requireAdmin, (req, res) => {
+  const payload = bulkDeleteSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  deleteBuildingTemplates(payload.data.ids)
+  notifyKioskContentUpdated('building-templates')
+  res.json({ ok: true, deleted: payload.data.ids.length })
 })
 
 app.post('/api/admin/building-templates', requireAdmin, templateUpload.array('templates', 50), (req, res) => {
@@ -1055,6 +1487,7 @@ app.post('/api/admin/building-templates', requireAdmin, templateUpload.array('te
     return
   }
 
+  notifyKioskContentUpdated('building-templates')
   res.status(201).json({
     uploaded: files.map((file) => toBuildingTemplate(file.filename)),
   })
@@ -1069,6 +1502,7 @@ app.patch('/api/admin/building-templates/:fileName', requireAdmin, (req, res) =>
 
   try {
     const template = renameBuildingTemplateFile(String(req.params.fileName ?? ''), payload.data.name)
+    notifyKioskContentUpdated('building-templates')
     res.json({ ok: true, template })
   } catch (error) {
     if (error instanceof Error) {
@@ -1097,6 +1531,7 @@ app.patch('/api/admin/building-templates/:fileName/visibility', requireAdmin, (r
       return
     }
 
+    notifyKioskContentUpdated('building-templates')
     res.json({ ok: true, template })
   } catch (error) {
     if (error instanceof Error) {
@@ -1111,6 +1546,7 @@ app.patch('/api/admin/building-templates/:fileName/visibility', requireAdmin, (r
 app.delete('/api/admin/building-templates/:fileName', requireAdmin, (req, res) => {
   try {
     deleteBuildingTemplateFile(String(req.params.fileName ?? ''))
+    notifyKioskContentUpdated('building-templates')
     res.json({ ok: true })
   } catch (error) {
     if (error instanceof Error) {
@@ -1131,6 +1567,7 @@ app.patch('/api/admin/images/:fileName', requireAdmin, (req, res) => {
 
   try {
     const image = renameImageFile(String(req.params.fileName ?? ''), payload.data.name)
+    notifyKioskContentUpdated('images')
     res.json({ ok: true, image })
   } catch (error) {
     if (error instanceof Error) {
@@ -1145,6 +1582,7 @@ app.patch('/api/admin/images/:fileName', requireAdmin, (req, res) => {
 app.delete('/api/admin/images/:fileName', requireAdmin, (req, res) => {
   try {
     deleteImageFile(String(req.params.fileName ?? ''))
+    notifyKioskContentUpdated('images')
     res.json({ ok: true })
   } catch (error) {
     if (error instanceof Error) {
@@ -1160,8 +1598,74 @@ app.get('/api/admin/feedback', requireAdmin, (_req, res) => {
   res.json(listFeedbackStatement.all() as FeedbackRow[])
 })
 
+app.delete('/api/admin/feedback', requireAdmin, (_req, res) => {
+  clearTable('feedback')
+  res.json({ ok: true })
+})
+
 app.get('/api/admin/report', requireAdmin, (_req, res) => {
   res.json(buildReportRows())
+})
+
+app.delete('/api/admin/analytics', requireAdmin, (_req, res) => {
+  clearTable('analytics')
+  res.json({ ok: true })
+})
+
+app.get('/api/admin/quick-links', requireAdmin, (_req, res) => {
+  res.json(listQuickLinks())
+})
+
+app.post('/api/admin/quick-links', requireAdmin, (req, res) => {
+  const payload = quickLinkSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  const result = insertQuickLinkStatement.run(
+    payload.data.label,
+    payload.data.usid.toUpperCase(),
+    payload.data.sortOrder,
+  ) as { lastInsertRowid: number }
+
+  notifyKioskContentUpdated('quick-links')
+  res.status(201).json({ ok: true, id: result.lastInsertRowid })
+})
+
+app.put('/api/admin/quick-links/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid id' })
+    return
+  }
+
+  const payload = quickLinkSchema.safeParse(req.body)
+  if (!payload.success) {
+    res.status(400).json({ error: payload.error.flatten() })
+    return
+  }
+
+  updateQuickLinkStatement.run(
+    payload.data.label,
+    payload.data.usid.toUpperCase(),
+    payload.data.sortOrder,
+    id,
+  )
+  notifyKioskContentUpdated('quick-links')
+  res.json({ ok: true })
+})
+
+app.delete('/api/admin/quick-links/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid id' })
+    return
+  }
+
+  deleteQuickLinkStatement.run(id)
+  notifyKioskContentUpdated('quick-links')
+  res.json({ ok: true })
 })
 
 app.get('/api/admin/report.xlsx', requireAdmin, async (_req, res) => {

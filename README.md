@@ -28,6 +28,8 @@ PATHFINDER ist eine kioskoptimierte Wegfindungs-App mit Admin-Oberfläche. Das P
 - infra/nginx: Nginx-Konfiguration für Produktion
 - compose.yaml: kompletter Produktions-Stack für Docker und Portainer
 
+`compose.yaml` ist die primäre Produktionsdatei. `docker-compose.yml` spiegelt dieselben Persistenz-Pfade, damit auch Tools, die standardmäßig diese Datei wählen, Datenbank, Uploads und Templates korrekt in Volumes schreiben.
+
 ## Voraussetzungen
 
 Für lokale `.env`-Nutzung:
@@ -145,6 +147,8 @@ Seit dem aktuellen Stack-Setup werden auch Building-Templates in einem eigenen V
 - Building-Templates: Docker-Volume pathfinder_building_templates
 - Optionaler Erstimport aus `backend/legacy/db.json` oder `db.json`: Wird nur ausgeführt, wenn die Datenbank noch leer ist
 
+Wenn ein älterer Stack ohne die `PATHFINDER_*`-Pfadvariablen gestartet wurde, konnten SQLite-Datei und Uploads im Container-Dateisystem statt im Volume landen. In diesem Fall bleiben die Volumes zwar bestehen, enthalten aber nicht die produktiven Daten.
+
 Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wird der Legacy-Import danach nicht erneut ausgeführt. In dem Fall musst du entweder importieren oder das Daten-Volume bewusst neu anlegen.
 
 ## Wichtige Umgebungsvariablen
@@ -183,6 +187,7 @@ Wichtig: Wenn der Stack bereits einmal mit leerer Datenbank gestartet wurde, wir
 - Viele Bilder im Admin-Bereich: Die Bildbibliothek lädt nur eine Seite gleichzeitig und kann über die Suche gefiltert werden.
 - Bilder fehlen nach Redeploy: sicherstellen, dass die Volumes nicht gelöscht wurden.
 - Templates fehlen nach Redeploy: sicherstellen, dass das Volume `pathfinder_building_templates` vorhanden ist und der Stack auf dem aktuellen Stand läuft.
+- Daten trotz vorhandener Volumes weg: prüfen, ob Portainer wirklich `compose.yaml` oder die aktualisierte `docker-compose.yml` verwendet. Ältere Deployments ohne `PATHFINDER_DATA_DIR` und `PATHFINDER_UPLOADS_DIR` haben Daten im Container statt im Volume gespeichert.
 - Optionaler Erstimport greift nur beim allerersten Start mit leerer Datenbank und nur wenn eine `db.json` vorhanden ist.
 
 ## Hinweise
